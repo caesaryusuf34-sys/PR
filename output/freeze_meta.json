@@ -1,0 +1,12 @@
+{
+ "skipped_started_before_freeze": [
+  {
+   "event_id": "401856709",
+   "away": "Kentucky",
+   "home": "South Carolina",
+   "kickoff_et": "2026-10-03 04:15 PM ET"
+  }
+ ],
+ "freeze_utc": "2026-10-03T20:35:20.283773+00:00",
+ "sigma": 16.09308762692706
+}
