@@ -1,7 +1,8 @@
 """Pre-game / post-game separation.
 
 A post-game fact about game X (its score, box score, play-by-play) becomes *available* at
-    available_at(X) = kickoff(X) + game_duration
+    available_at(X) = min(kickoff(X) + game_duration, time the final result was recorded)
+(the recorded time only counts when it is after kickoff, i.e. the game was observed final live)
 and may be used to predict game Y only if available_at(X) <= cutoff(Y) <= kickoff(Y).
 
 Every feature builder receives an explicit ``cutoff`` and must obtain its inputs through

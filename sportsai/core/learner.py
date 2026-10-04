@@ -45,6 +45,8 @@ class Learner:
         done = self.E.store.completed_games(self.E.sport)
         cut = pd.Timestamp(ch.train_cutoff_utc)
         avail = done.kickoff_utc + pd.Timedelta(hours=self.E.adapter.game_duration_hours)
+        seen = pd.to_datetime(done.result_collected_utc, utc=True)
+        avail = avail.where((seen >= avail) | (seen <= done.kickoff_utc), seen)   # same availability rule as features
         return int(((avail > cut) & (avail <= now())).sum()), ch.version
 
     def degradation_z(self) -> float | None:

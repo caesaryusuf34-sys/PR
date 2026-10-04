@@ -45,7 +45,14 @@ class NCAAFFeatureBuilder(FeatureBuilder):
         self.guard = guard
         self.sched = schedule.copy()
         self.done = completed[completed.season >= self.FIRST_SEASON].sort_values(["kickoff_utc", "game_id"]).reset_index(drop=True)
-        self.done["avail"] = guard.available_at(self.done.kickoff_utc)
+        # a result is usable once it was observed final: at the time it was recorded, and in any case no later
+        # than kickoff + duration (historical backfills are recorded long after the fact)
+        avail = guard.available_at(self.done.kickoff_utc)
+        if "result_collected_utc" in self.done:
+            seen = pd.to_datetime(self.done.result_collected_utc, utc=True)
+            avail = avail.where(seen.isna() | (seen >= avail), seen)
+            avail = avail.where(avail > self.done.kickoff_utc, guard.available_at(self.done.kickoff_utc))
+        self.done["avail"] = avail
         self.stats = stats.copy() if len(stats) else pd.DataFrame(columns=["game_id", "team_id", "kickoff_utc", "season"])
         # division per team-season from the schedule (pre-game knowledge): share of games in the FBS feed
         long = pd.concat([self.sched[["season", "home_id", "feed_group"]].rename(columns={"home_id": "tid"}),

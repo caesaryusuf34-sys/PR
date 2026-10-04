@@ -31,6 +31,7 @@ def main(argv=None):
     p.add_argument("--backtest", action="store_true", help="predict already-started games with a pre-kickoff cutoff (logged as non-blind)")
     p = sub.add_parser("week"); p.add_argument("--no-update", action="store_true"); p.add_argument("--no-save", action="store_true")
     p.add_argument("--report", default=None, help="write a markdown report to this path")
+    p = sub.add_parser("scorecard"); p.add_argument("--since", default=None); p.add_argument("--out", default=None)
     p = sub.add_parser("update"); p.add_argument("--no-learn", action="store_true"); p.add_argument("--force-learn", action="store_true")
     p = sub.add_parser("learn"); p.add_argument("--force", action="store_true")
     sub.add_parser("status"); sub.add_parser("versions")
@@ -81,6 +82,11 @@ def main(argv=None):
             md = E.week_report(recs, started, f"{E.sport.upper()} — predictions for the current week",
                                _j.loads(ch.validation_json) if ch is not None and ch.validation_json else None)
             open(a.report, "w").write(md); print(f"report written to {a.report}")
+    elif a.cmd == "scorecard":
+        md = E.scorecard(since=a.since)
+        print(md)
+        if a.out:
+            open(a.out, "w").write(md)
     elif a.cmd == "update":
         out = E.auto_update(learn=not a.no_learn, force_learn=a.force_learn)
         if "learning" in out:

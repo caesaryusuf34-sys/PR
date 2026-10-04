@@ -86,3 +86,17 @@ def test_nfl_truncation_invariance():
     A = fb.build(t).set_index("game_id"); B = fb2.build(t).set_index("game_id")
     num = A.select_dtypes("number").columns
     assert np.nanmax(np.abs((A[num] - B[num]).values)) < 1e-9
+
+
+def test_live_recorded_results_visible_only_after_recording():
+    """A final recorded live (before kickoff+duration) becomes visible at its recording time, never earlier."""
+    st = Store(S.db_path); ad = get_adapter("nfl", S)
+    done = st.completed_games("nfl")
+    if done.empty:
+        pytest.skip("nfl not synced")
+    fb = ad.feature_builder(st)
+    seen = pd.to_datetime(done.result_collected_utc, utc=True)
+    early = done[(seen < done.kickoff_utc + pd.Timedelta(hours=ad.game_duration_hours)) & (seen > done.kickoff_utc)]
+    for _, g in early.iterrows():
+        a = fb.done.set_index("game_id").loc[g.game_id, "avail"]
+        assert a == pd.Timestamp(g.result_collected_utc) and a > g.kickoff_utc

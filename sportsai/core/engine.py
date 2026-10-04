@@ -262,6 +262,40 @@ class Engine:
         L += ["", "**Highest model disagreement:** " + ", ".join(f"{r['away_name']} @ {r['home_name']}" for r in dis[:3])]
         return "\n".join(L)
 
+    def scorecard(self, since=None, title=None) -> str:
+        """Markdown scorecard: graded picks (latest blind pick per game & model), metrics, pending picks."""
+        from .metrics import summarize
+        P = self.store.predictions(self.sport)
+        P = P[P.origin.isin(["live", "legacy_import"]) & P.game_id.notna()]
+        if since is not None:
+            P = P[pd.to_datetime(P.kickoff_utc, utc=True) >= ts(since)]
+        P = P.sort_values("created_utc").drop_duplicates(["game_id", "model_version"], keep="last")
+        R = self.store.df("SELECT game_id, home_score, away_score FROM results WHERE sport=?", (self.sport,))
+        M = P.merge(R, on="game_id", how="left").sort_values("kickoff_utc")
+        done, pend = M[M.home_score.notna()], M[M.home_score.isna()]
+        L = [f"# {title or self.sport.upper() + ' scorecard'}", ""]
+        if len(done):
+            y = (done.home_score > done.away_score).astype(int).values
+            s = summarize(done.p_home.values, y, done.pred_margin.values, (done.home_score - done.away_score).values,
+                          done.pred_total.values, (done.home_score + done.away_score).values)
+            exp = float(np.maximum(done.p_home, 1 - done.p_home).sum())
+            L += [f"**Graded: {int(((done.p_home >= .5) == (y == 1)).sum())}/{len(done)} correct** "
+                  f"(expected {exp:.1f} from the stated probabilities) · Brier {s['brier']:.3f} · log loss {s['log_loss']:.3f} · "
+                  f"margin MAE {s['margin_mae']:.1f} · total MAE {s['total_mae']:.1f}", "",
+                  "| Game | Final | Pick (prob) | Projected | Result |", "|---|---|---|---|---|"]
+            for r in done.itertuples():
+                pick = r.home_name if r.p_home >= .5 else r.away_name
+                ok = (r.p_home >= .5) == (r.home_score > r.away_score)
+                L.append(f"| {r.away_name} @ {r.home_name} | {int(r.away_score)}–{int(r.home_score)} | {pick} ({100 * max(r.p_home, 1 - r.p_home):.0f}%) | "
+                         f"{r.proj_away:.0f}–{r.proj_home:.0f} | {'✅' if ok else '❌'} |")
+        if len(pend):
+            L += ["", "## Not final yet (latest blind prediction)", "", "| Game | Kickoff (UTC) | Pick | Win % | Projected | Predicted at (UTC) |", "|---|---|---|---|---|---|"]
+            for r in pend.itertuples():
+                pick = r.home_name if r.p_home >= .5 else r.away_name
+                L.append(f"| {r.away_name} @ {r.home_name} | {r.kickoff_utc[5:16].replace('T', ' ')} | {pick} | {100 * max(r.p_home, 1 - r.p_home):.0f}% | "
+                         f"{r.proj_away:.0f}–{r.proj_home:.0f} | {r.created_utc[5:16].replace('T', ' ')} |")
+        return "\n".join(L)
+
     def status(self) -> dict:
         v = self.registry.versions()
         ev = self.store.evaluated(self.sport)
