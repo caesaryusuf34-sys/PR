@@ -1,0 +1,4 @@
+# Run the self-learning loop every 6 hours (sync -> collect results -> evaluate -> learn if due),
+# then persist the database/model registry by committing store/ (the system's memory).
+0 */6 * * *  cd /path/to/repo && python -m sportsai update >> cache/update.log 2>&1 && \
+             git add store && git commit -qm "sportsai: scheduled update" && git push -q

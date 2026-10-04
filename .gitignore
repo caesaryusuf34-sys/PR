@@ -1,3 +1,6 @@
 data/raw/
 __pycache__/
 *.pkl
+cache/
+store/*.db-wal
+store/*.db-shm
