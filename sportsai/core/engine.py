@@ -35,6 +35,9 @@ class Engine:
         self.store = Store(self.S.db_path)
         self.adapter = get_adapter(sport, self.S)
         self.sport = self.adapter.sport
+        if getattr(self.adapter, "policy_overrides", None):     # sport-specific learning policy
+            import dataclasses
+            self.S.policy = dataclasses.replace(self.S.policy, **self.adapter.policy_overrides)
         self.registry = ModelRegistry(self.store, self.S.models_dir, self.sport, self.S.root)
         self.fstore = FeatureStore(self.S, self.store, self.adapter)
 
@@ -153,6 +156,8 @@ class Engine:
             ph, pa = max((total + margin) / 2, 0), max((total - margin) / 2, 0)
             expl = self.adapter.explain(row, pr, model)
             ctx = self.adapter.pregame_context(gi.game_id) if (context and origin == "live" and gi.game_id) else {}
+            if ctx and hasattr(self.adapter, "augment_explanation"):
+                expl = self.adapter.augment_explanation(expl, ctx, gi)
             is_blind = int(origin == "live" and created < gi.kickoff_utc)
             feats = {f: (None if pd.isna(row.get(f)) else float(row.get(f))) for f in self.builder_candidates() + list(model.features) if f in row}
             members = {k: float(v) for k, v in pr.items() if (k.startswith("p_") or k.startswith("m_")) and pd.notna(v)}
@@ -210,6 +215,51 @@ class Engine:
         if rec.get("pred_id"):
             L.append(f"\n{'already logged' if rec.get('duplicate_of_existing') else 'logged'} as prediction {rec['pred_id']} "
                      f"(snapshot sha256 {rec['snapshot_sha256'][:16]}…)")
+        return "\n".join(L)
+
+    def predict_week(self, save: bool = True) -> tuple[list[dict], pd.DataFrame]:
+        """Predict every not-yet-started game on the league's current-week scoreboard."""
+        ids = self.adapter.current_week_game_ids()
+        g = self.store.games(self.sport)
+        g = g[g.game_id.isin(ids)].sort_values(["kickoff_utc", "game_id"])
+        res = set(self.store.df("SELECT game_id FROM results WHERE sport=?", (self.sport,)).game_id)
+        started = g[(g.kickoff_utc <= now()) | g.game_id.isin(res)]
+        todo = g[~g.game_id.isin(started.game_id)]
+        recs = self.predict_games(todo, origin="live", save=save) if len(todo) else []
+        return recs, started
+
+    @staticmethod
+    def week_report(recs: list[dict], excluded: pd.DataFrame, title: str, validation: dict | None = None) -> str:
+        L = [f"# {title}", ""]
+        if recs:
+            L.append(f"- Model **{recs[0]['model_version']}** · predictions frozen {recs[0]['created_utc']} (before every kickoff listed) · "
+                     f"all inputs are pre-game; results/injuries after the cutoff never enter")
+        if validation:
+            w = validation.get("walk_forward", {})
+            L.append(f"- Walk-forward validation ({w.get('n')} out-of-sample games): accuracy {w.get('accuracy', 0):.1%}, "
+                     f"log loss {w.get('log_loss', 0):.3f}, Brier {w.get('brier', 0):.3f}, margin MAE {w.get('margin_mae', 0):.1f}")
+        if len(excluded):
+            L.append("- Not predicted (already started or final at freeze): " + "; ".join(f"{r.away_name} @ {r.home_name}" for r in excluded.itertuples()))
+        L.append("- Betting lines are not model inputs. Injury reports are shown as risk context only (no historical injury data to train on).")
+        L += ["", "## Games", ""]
+        for r in recs:
+            L += ["```", Engine.format(r), "```", ""]
+        L += ["## Summary", "", "| Game | Kickoff (UTC) | Pick | Win % | Projected score | Upset % | Confidence | Flags |", "|---|---|---|---|---|---|---|---|"]
+        for r in recs:
+            p = r["p_home"]; pick = r["home_name"] if p >= 0.5 else r["away_name"]
+            flags = []
+            if int(r["members"].get("models_split", 0) if isinstance(r["members"], dict) else 0): flags.append("split")
+            if r["explanation"].get("injury_flags"): flags.append("injuries: " + ", ".join(r["explanation"]["injury_flags"][:2]))
+            L.append(f"| {r['away_name']} @ {r['home_name']}{' (N)' if r['neutral'] else ''} | {r['kickoff_utc'][5:16].replace('T', ' ')} | {pick} | "
+                     f"{100 * max(p, 1 - p):.0f}% | {r['away_name']} {r['proj_away']:.0f}–{r['proj_home']:.0f} {r['home_name']} | "
+                     f"{100 * r['upset_prob']:.0f}% | {r['confidence']:.1f} | {'; '.join(flags)} |")
+        srt = sorted(recs, key=lambda r: -max(r["p_home"], 1 - r["p_home"]))
+        L += ["", "**Most confident:** " + ", ".join(f"{(r['home_name'] if r['p_home'] >= .5 else r['away_name'])} ({100 * max(r['p_home'], 1 - r['p_home']):.0f}%)" for r in srt[:4])]
+        L += ["", "**Closest:** " + ", ".join(f"{r['away_name']} @ {r['home_name']} ({100 * max(r['p_home'], 1 - r['p_home']):.0f}%)" for r in srt[::-1][:4])]
+        ups = [r for r in recs if r["upset_prob"] >= 0.35]
+        L += ["", "**Upset candidates (underdog ≥ 35%):** " + (", ".join(f"{(r['away_name'] if r['p_home'] >= .5 else r['home_name'])} {100 * r['upset_prob']:.0f}%" for r in sorted(ups, key=lambda r: -r['upset_prob'])) or "none")]
+        dis = sorted(recs, key=lambda r: -np.std([v for k, v in r["members"].items() if k.startswith("p_") and k not in ("p_home", "p_raw", "p_std")]))
+        L += ["", "**Highest model disagreement:** " + ", ".join(f"{r['away_name']} @ {r['home_name']}" for r in dis[:3])]
         return "\n".join(L)
 
     def status(self) -> dict:

@@ -170,7 +170,7 @@ class Learner:
     def bootstrap(self, as_of=None, config: dict | None = None, version: str = "v1.0") -> dict:
         E = self.E; as_of = as_of or now()
         cfg = config or E.adapter.default_config()
-        data = E.fstore.training_frame(as_of=as_of, min_season=2022)
+        data = E.fstore.training_frame(as_of=as_of, min_season=E.adapter.first_train_season)
         folds = self.folds(data)
         print(f"[bootstrap] {len(data)} games up to {iso(as_of)}; walk-forward over {sum(len(f[2]) for f in folds)} games", flush=True)
         oos, _, _ = self.walk_forward(cfg, data, folds)
@@ -193,7 +193,7 @@ class Learner:
         champ_model = E.registry.load(ch.version)
         self.champion_weights = champ_model.weights()
         n_new, _ = self.new_games_since_champion()
-        data = E.fstore.training_frame(min_season=2022)
+        data = E.fstore.training_frame(min_season=E.adapter.first_train_season)
         self.available = set(data.columns)
         folds = self.folds(data)
         print(f"[learn] {len(data)} games, eval window {sum(len(f[2]) for f in folds)} in {len(folds)} folds; {why}", flush=True)

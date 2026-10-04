@@ -33,14 +33,18 @@ EXTRA_FEATURES = ["pp_home", "pp_away", "elo_h", "elo_a", "form3_h", "form3_a", 
 
 
 class NCAAFFeatureBuilder(FeatureBuilder):
+    """Generic American-football point-in-time builder; sport specifics are class attributes."""
     feature_version = "ncaaf-f1"
+    FIRST_SEASON, FIRST_STATS_SEASON, SHRINK, LAM, ELO, ELO_PTS = FIRST_SEASON, FIRST_STATS_SEASON, SHRINK, LAM, ELO, ELO_PTS
+    ELO_INIT = None            # None -> ratings.ELO_INIT (FBS/FCS/OTHER)
+    SPORT = "ncaaf"
     model_features = MODEL_FEATURES
     candidate_features = MODEL_FEATURES + EXTRA_FEATURES + [f for f in UNIT_FEATURES if f not in MODEL_FEATURES]
 
     def __init__(self, schedule: pd.DataFrame, completed: pd.DataFrame, stats: pd.DataFrame, guard: TemporalGuard):
         self.guard = guard
         self.sched = schedule.copy()
-        self.done = completed[completed.season >= FIRST_SEASON].sort_values(["kickoff_utc", "game_id"]).reset_index(drop=True)
+        self.done = completed[completed.season >= self.FIRST_SEASON].sort_values(["kickoff_utc", "game_id"]).reset_index(drop=True)
         self.done["avail"] = guard.available_at(self.done.kickoff_utc)
         self.stats = stats.copy() if len(stats) else pd.DataFrame(columns=["game_id", "team_id", "kickoff_utc", "season"])
         # division per team-season from the schedule (pre-game knowledge): share of games in the FBS feed
@@ -55,7 +59,8 @@ class NCAAFFeatureBuilder(FeatureBuilder):
 
     # ------------------------------------------------------------------ helpers
     @classmethod
-    def from_store(cls, store, guard, sport="ncaaf"):
+    def from_store(cls, store, guard, sport=None):
+        sport = sport or cls.SPORT
         return cls(store.games(sport), store.completed_games(sport), store.team_game_stats(sport), guard)
 
     def div_of(self, season, tid):
@@ -126,13 +131,13 @@ class NCAAFFeatureBuilder(FeatureBuilder):
         for t in self._teams_by_season.get(season, []):
             mo, md = dmean.get(self.div_of(season, t), dmean.get("OTHER", (0.0, 0.0)))
             if t in po:
-                prior_o[t] = SHRINK * po[t] + (1 - SHRINK) * mo; prior_d[t] = SHRINK * pdv[t] + (1 - SHRINK) * md
+                prior_o[t] = self.SHRINK * po[t] + (1 - self.SHRINK) * mo; prior_d[t] = self.SHRINK * pdv[t] + (1 - self.SHRINK) * md
             else:
                 prior_o[t], prior_d[t] = mo, md
         return prior_o, prior_d
 
     def _final(self, metric, season, cutoff):
-        first = FIRST_SEASON if metric == "pts" else FIRST_STATS_SEASON
+        first = self.FIRST_SEASON if metric == "pts" else self.FIRST_STATS_SEASON
         if season < first:
             return None
         o, y = self._obs(metric, season, cutoff)
@@ -140,19 +145,19 @@ class NCAAFFeatureBuilder(FeatureBuilder):
         if key not in self._finals:
             prior_o, prior_d = self._prior(metric, season, cutoff)
             teams = sorted(set(self._teams_by_season.get(season, [])) | set(o.off) | set(o.dfn))
-            _, _, ro, rd = ridge_ratings(o.off.values, o.dfn.values, o["loc"].values, y, teams, prior_o, prior_d, LAM[metric])
+            _, _, ro, rd = ridge_ratings(o.off.values, o.dfn.values, o["loc"].values, y, teams, prior_o, prior_d, self.LAM[metric])
             self._finals[key] = (ro, rd)
         return self._finals[key]
 
     def ratings_at(self, season, cutoff, extra_teams=()):
         out = {}
-        for metric in ["pts"] + (EFF if season >= FIRST_STATS_SEASON else []):
+        for metric in ["pts"] + (EFF if season >= self.FIRST_STATS_SEASON else []):
             o, y = self._obs(metric, season, cutoff)
             self.guard.check(pd.DataFrame({"kickoff_utc": o.avail - self.guard.duration}) if len(o) else pd.DataFrame({"kickoff_utc": []}),
                              cutoff, f"ratings[{metric}]")
             prior_o, prior_d = self._prior(metric, season, cutoff)
             teams = sorted(set(self._teams_by_season.get(season, [])) | set(o.off) | set(o.dfn) | set(extra_teams))
-            mu, h, ro, rd = ridge_ratings(o.off.values, o.dfn.values, o["loc"].values, y, teams, prior_o, prior_d, LAM[metric])
+            mu, h, ro, rd = ridge_ratings(o.off.values, o.dfn.values, o["loc"].values, y, teams, prior_o, prior_d, self.LAM[metric])
             out[metric] = (mu, h, ro, rd)
         return out
 
@@ -170,8 +175,8 @@ class NCAAFFeatureBuilder(FeatureBuilder):
                     if pre is None:
                         continue
                     mine, theirs = (pre[0], pre[1]) if r.is_home else (pre[1], pre[0])
-                    hfa = 0 if r.neutral else (ELO["HFA"] if r.is_home else -ELO["HFA"])
-                    resid.append(r.margin - (mine - theirs + hfa) / ELO_PTS)
+                    hfa = 0 if r.neutral else (self.ELO["HFA"] if r.is_home else -self.ELO["HFA"])
+                    resid.append(r.margin - (mine - theirs + hfa) / self.ELO_PTS)
                 res["form3"] = float(np.mean(resid)) if resid else 0.0
                 res["rest"] = float(min((kickoff - vis.kick.iloc[-1]).days, 21))
         q = self._qb.get((tid, season))
@@ -193,7 +198,7 @@ class NCAAFFeatureBuilder(FeatureBuilder):
         if (t.cutoff_utc > t.kickoff_utc).any():
             raise ValueError("cutoff after kickoff")
         t = t.sort_values(["cutoff_utc", "game_id"])
-        elo = EloEngine(self.done, self.done.avail, self.div_of, **ELO)
+        elo = EloEngine(self.done, self.done.avail, self.div_of, **self.ELO, init=self.ELO_INIT)
         rows = []
         for (cutoff, season), grp in t.groupby(["cutoff_utc", "season"], sort=True):
             elo.advance(cutoff)
@@ -205,7 +210,7 @@ class NCAAFFeatureBuilder(FeatureBuilder):
                 loc = 0 if bool(g.neutral) else 1
                 f = {"game_id": g.game_id, "cutoff_utc": cutoff, "n_games_visible": n_used, "n_stats_visible": n_stats}
                 eh, ea = elo.rating(season, g.home_id), elo.rating(season, g.away_id)
-                f.update(elo_h=eh, elo_a=ea, elo_diff=eh - ea + loc * ELO["HFA"])
+                f.update(elo_h=eh, elo_a=ea, elo_diff=eh - ea + loc * self.ELO["HFA"])
                 for metric, (mu, h, ro, rd) in R.items():
                     f[f"h_o_{metric}"], f[f"h_d_{metric}"] = ro[g.home_id], rd[g.home_id]
                     f[f"a_o_{metric}"], f[f"a_d_{metric}"] = ro[g.away_id], rd[g.away_id]

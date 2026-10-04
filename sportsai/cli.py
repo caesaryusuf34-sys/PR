@@ -29,6 +29,8 @@ def main(argv=None):
     p = sub.add_parser("slate"); p.add_argument("--date", required=True, help="YYYYMMDD (US/Eastern game day)")
     p.add_argument("--no-update", action="store_true"); p.add_argument("--no-save", action="store_true")
     p.add_argument("--backtest", action="store_true", help="predict already-started games with a pre-kickoff cutoff (logged as non-blind)")
+    p = sub.add_parser("week"); p.add_argument("--no-update", action="store_true"); p.add_argument("--no-save", action="store_true")
+    p.add_argument("--report", default=None, help="write a markdown report to this path")
     p = sub.add_parser("update"); p.add_argument("--no-learn", action="store_true"); p.add_argument("--force-learn", action="store_true")
     p = sub.add_parser("learn"); p.add_argument("--force", action="store_true")
     sub.add_parser("status"); sub.add_parser("versions")
@@ -65,6 +67,20 @@ def main(argv=None):
                 print("no unstarted games on that date"); return
             for r in E.predict_games(g, origin="live", save=not a.no_save):
                 print(E.format(r)); print("-" * 70)
+    elif a.cmd == "week":
+        if not a.no_update:
+            E.auto_update()
+        recs, started = E.predict_week(save=not a.no_save)
+        for r in recs:
+            print(E.format(r)); print("-" * 70)
+        if len(started):
+            print("not predicted (started/final):", ", ".join(f"{r.away_name} @ {r.home_name}" for r in started.itertuples()))
+        if a.report and recs:
+            import json as _j
+            ch = E.registry.champion_row()
+            md = E.week_report(recs, started, f"{E.sport.upper()} — predictions for the current week",
+                               _j.loads(ch.validation_json) if ch is not None and ch.validation_json else None)
+            open(a.report, "w").write(md); print(f"report written to {a.report}")
     elif a.cmd == "update":
         out = E.auto_update(learn=not a.no_learn, force_learn=a.force_learn)
         if "learning" in out:

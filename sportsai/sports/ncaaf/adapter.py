@@ -49,27 +49,50 @@ def current_season(t: pd.Timestamp) -> int:
 
 class NCAAFAdapter(SportAdapter):
     sport = SPORT
+    first_train_season = 2022
+    policy_overrides: dict = {}
+    full_names = False
+    league_path = "football/college-football"
+    builder_cls = NCAAFFeatureBuilder
     game_duration_hours = 4.5
-    feature_builder_version = NCAAFFeatureBuilder.feature_version
-    candidate_features = NCAAFFeatureBuilder.candidate_features
+    @property
+    def feature_builder_version(self):
+        return self.builder_cls.feature_version
+
+    @property
+    def candidate_features(self):
+        return self.builder_cls.candidate_features
 
     def __init__(self, settings):
         self.settings = settings
-        self.espn = ESPN("football/college-football", settings.user_agent)
+        self.espn = ESPN(self.league_path, settings.user_agent)
         self.guard = TemporalGuard(self.game_duration_hours)
-        self.cache = settings.cache_dir / SPORT / "parsed"
+        self.cache = settings.cache_dir / self.sport / "parsed"
         self.cache.mkdir(parents=True, exist_ok=True)
-        self.ep_path = settings.store_dir / f"{SPORT}_ep_model.json"
+        self.ep_path = settings.store_dir / f"{self.sport}_ep_model.json"
 
     # ================================================================== ingestion
+    def scoreboard_jobs(self, seasons):
+        return [(s, 2, w, g) for s in seasons for w in range(1, 17) for g in (80, 81)] + \
+               [(s, 3, 1, g) for s in seasons for g in (80, 81)]
+
+    def skip_event(self, e, h, a) -> bool:
+        return False
+
+    def current_week_game_ids(self) -> list[str]:
+        """Game ids on ESPN's current-week scoreboard (pre-game schedule information)."""
+        ids = []
+        for g in (80, 81):
+            ids += [str(e["id"]) for e in self.espn.scoreboard(groups=g).get("events", [])]
+        return list(dict.fromkeys(ids))
+
     def sync(self, store, *, full=False, seasons=None, stats=True) -> dict:
         t0 = now(); cur = current_season(t0)
-        seasons = seasons or (list(range(FIRST_SEASON, cur + 1)) if full else [cur])
-        jobs = [(s, 2, w, g) for s in seasons for w in range(1, 17) for g in (80, 81)] + \
-               [(s, 3, 1, g) for s in seasons for g in (80, 81)]
+        seasons = seasons or (list(range(self.builder_cls.FIRST_SEASON, cur + 1)) if full else [cur])
+        jobs = self.scoreboard_jobs(seasons)
         stamp = iso(t0)
         G, Rr, T = [], [], []
-        sb_cache = self.settings.cache_dir / SPORT / "scoreboards"; sb_cache.mkdir(parents=True, exist_ok=True)
+        sb_cache = self.settings.cache_dir / self.sport / "scoreboards"; sb_cache.mkdir(parents=True, exist_ok=True)
         def fetch(j):
             s, st, w, g = j
             fn = sb_cache / f"{s}_{st}_{w}_{g}.json"
@@ -88,16 +111,16 @@ class NCAAFAdapter(SportAdapter):
                 for (s, st, w, g), d in ex.map(fetch, jobs):
                     if d is None:
                         failed.append((s, st, w, g)); continue
-                    a, b, c = scoreboard_rows(d, g, stamp)
+                    a, b, c = scoreboard_rows(d, g, stamp, sport=self.sport, skip=self.skip_event, full_names=self.full_names)
                     G += a; Rr += b; T += c
             if not failed:
                 break
             jobs, failed = failed, []
         # FBS feed first so feed_group=80 wins for games listed in both feeds
-        G = list({r["game_id"]: r for r in sorted(G, key=lambda r: -r["feed_group"])}.values())
+        G = list({r["game_id"]: r for r in sorted(G, key=lambda r: -(r["feed_group"] or 0))}.values())
         T = list({r["team_id"]: r for r in T}.values())
         Rr = list({r["game_id"]: r for r in Rr}.values())
-        known = set(store.df("SELECT game_id FROM results WHERE sport=?", (SPORT,)).game_id)
+        known = set(store.df("SELECT game_id FROM results WHERE sport=?", (self.sport,)).game_id)
         new_results = [r for r in Rr if r["game_id"] not in known]
         store.upsert_teams(T); store.upsert_games(G)
         # results keep their first collection timestamp; corrections update the score only
@@ -106,11 +129,11 @@ class NCAAFAdapter(SportAdapter):
             if r["game_id"] in known:
                 with store.tx() as c:
                     c.execute("UPDATE results SET home_score=?, away_score=?, status=? WHERE sport=? AND game_id=?",
-                              (r["home_score"], r["away_score"], r["status"], SPORT, r["game_id"]))
+                              (r["home_score"], r["away_score"], r["status"], self.sport, r["game_id"]))
         out = {"seasons": seasons, "games": len(G), "results_new": len(new_results), "failed_requests": failed}
         if stats:
             out["stats_new"] = self.sync_stats(store)
-        store.log(SPORT, "sync", json.dumps(out))
+        store.log(self.sport, "sync", json.dumps(out))
         return out
 
     def _summary_compact(self, eid: str, fetch: bool = True):
@@ -129,8 +152,8 @@ class NCAAFAdapter(SportAdapter):
     def ep_model(self, store) -> EPModel:
         if self.ep_path.exists():
             return EPModel.load(self.ep_path)
-        done = store.completed_games(SPORT)
-        fit_games = done[(done.season >= FIRST_STATS_SEASON) & (done.season <= current_season(now()) - 1)]
+        done = store.completed_games(self.sport)
+        fit_games = done[(done.season >= self.builder_cls.FIRST_STATS_SEASON) & (done.season <= current_season(now()) - 1)]
         parsed = [d for d in (self._summary_compact(e, fetch=False) for e in fit_games.game_id) if d]
         pl = plays_frame(parsed, dict(zip(fit_games.game_id, fit_games.home_id)))
         ep = EPModel().fit(pl)
@@ -139,9 +162,9 @@ class NCAAFAdapter(SportAdapter):
         return ep
 
     def sync_stats(self, store, game_ids=None, threads=16) -> int:
-        done = store.completed_games(SPORT)
-        have = set(store.df("SELECT game_id FROM team_game_stats WHERE sport=?", (SPORT,)).game_id)
-        todo = done[(done.season >= FIRST_STATS_SEASON) & ~done.game_id.isin(have)]
+        done = store.completed_games(self.sport)
+        have = set(store.df("SELECT game_id FROM team_game_stats WHERE sport=?", (self.sport,)).game_id)
+        todo = done[(done.season >= self.builder_cls.FIRST_STATS_SEASON) & ~done.game_id.isin(have)]
         if game_ids is not None:
             todo = todo[todo.game_id.isin(game_ids)]
         if todo.empty:
@@ -153,7 +176,7 @@ class NCAAFAdapter(SportAdapter):
         stamp = iso(now()); n = 0
         for i in range(0, len(parsed), 1500):
             rows = team_game_stats(parsed[i:i + 1500], home_of, ep)
-            store.upsert_team_game_stats([{"sport": SPORT, "game_id": r["game_id"], "team_id": r["team_id"],
+            store.upsert_team_game_stats([{"sport": self.sport, "game_id": r["game_id"], "team_id": r["team_id"],
                                            "stats_json": json.dumps(r["stats"], default=float), "stats_version": STATS_VERSION,
                                            "collected_utc": stamp} for r in rows])
             n += len(rows)
@@ -174,12 +197,12 @@ class NCAAFAdapter(SportAdapter):
             sc = {c["homeAway"]: num(c.get("score")) for c in comp.get("competitors", [])}
             if sc.get("home") is None or sc.get("away") is None:
                 continue
-            rows.append(dict(sport=SPORT, game_id=str(gid), home_score=sc["home"], away_score=sc["away"],
+            rows.append(dict(sport=self.sport, game_id=str(gid), home_score=sc["home"], away_score=sc["away"],
                              status=st.get("name"), collected_utc=stamp, source="espn_summary"))
             fn = self.cache / f"{gid}.json.gz"
             if not fn.exists():
                 json.dump(compact_summary(gid, s), gzip.open(fn, "wt"))
-        known = set(store.df("SELECT game_id FROM results WHERE sport=?", (SPORT,)).game_id)
+        known = set(store.df("SELECT game_id FROM results WHERE sport=?", (self.sport,)).game_id)
         store.upsert_results([r for r in rows if r["game_id"] not in known])
         if rows:
             self.sync_stats(store, game_ids=[r["game_id"] for r in rows])
@@ -187,11 +210,11 @@ class NCAAFAdapter(SportAdapter):
 
     # ================================================================== lookup
     def resolve_team(self, store, text: str) -> tuple[str, str]:
-        teams = store.df("SELECT * FROM teams WHERE sport=?", (SPORT,))
-        g = store.df("SELECT home_id, away_id, feed_group FROM games WHERE sport=? AND season>=?", (SPORT, current_season(now()) - 1))
+        teams = store.df("SELECT * FROM teams WHERE sport=?", (self.sport,))
+        g = store.df("SELECT home_id, away_id, feed_group FROM games WHERE sport=? AND season>=?", (self.sport, current_season(now()) - 1))
         cnt = pd.concat([g[g.feed_group == 80].home_id, g[g.feed_group == 80].away_id]).value_counts()
         q = _norm(ALIASES.get(_norm(text), text))
-        fields = ["location", "display_name", "abbr", "short_name"]
+        fields = ["location", "display_name", "abbr", "short_name", "name"]
         scored = []
         for r in teams.itertuples():
             names = {_norm(getattr(r, f)) for f in fields if getattr(r, f)}
@@ -214,8 +237,8 @@ class NCAAFAdapter(SportAdapter):
 
     def find_game(self, store, team_a, team_b, after, days=21):
         def search():
-            g = store.games(SPORT)
-            res = set(store.df("SELECT game_id FROM results WHERE sport=?", (SPORT,)).game_id)
+            g = store.games(self.sport)
+            res = set(store.df("SELECT game_id FROM results WHERE sport=?", (self.sport,)).game_id)
             m = (((g.home_id == team_a) & (g.away_id == team_b)) | ((g.home_id == team_b) & (g.away_id == team_a)))
             m &= (g.kickoff_utc > after - pd.Timedelta(hours=self.game_duration_hours)) & (g.kickoff_utc <= after + pd.Timedelta(days=days))
             m &= ~g.game_id.isin(res)
@@ -223,7 +246,7 @@ class NCAAFAdapter(SportAdapter):
         hit = search()
         if hit.empty:  # pull the team's schedule (pre-game information) and look again
             d = self.espn.team_schedule(team_a, current_season(after))
-            G, _, T = scoreboard_rows(d, None, iso(now()))
+            G, _, T = scoreboard_rows(d, None, iso(now()), sport=self.sport, skip=self.skip_event, full_names=self.full_names)
             if G:
                 store.upsert_teams(T); store.upsert_games(G, only_new=True)
             hit = search()
@@ -260,13 +283,13 @@ class NCAAFAdapter(SportAdapter):
     def qb_names(self, store, team_id: str, before: pd.Timestamp):
         s = store.df("""SELECT t.stats_json, g.kickoff_utc FROM team_game_stats t JOIN games g USING (sport, game_id)
                         WHERE t.sport=? AND t.team_id=? AND g.kickoff_utc < ? ORDER BY g.kickoff_utc DESC LIMIT 6""",
-                     (SPORT, team_id, iso(before - pd.Timedelta(hours=self.game_duration_hours))))
+                     (self.sport, team_id, iso(before - pd.Timedelta(hours=self.game_duration_hours))))
         names = [json.loads(x).get("qb_name") for x in s.stats_json]
         return [n for n in names if n]
 
     # ================================================================== modelling hooks
     def feature_builder(self, store):
-        return NCAAFFeatureBuilder.from_store(store, self.guard)
+        return self.builder_cls.from_store(store, self.guard, self.sport)
 
     def default_config(self) -> dict:
         gbm = dict(n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=40, reg_lambda=5.0)

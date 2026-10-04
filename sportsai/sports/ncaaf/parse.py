@@ -15,7 +15,7 @@ def num(x):
         return None
 
 
-def scoreboard_rows(d: dict, feed_group: int, collected_utc: str):
+def scoreboard_rows(d: dict, feed_group, collected_utc: str, sport: str = SPORT, skip=None, full_names: bool = False):
     games, results, teams = [], [], []
     for e in d.get("events", []):
         if not e.get("competitions"):
@@ -25,27 +25,29 @@ def scoreboard_rows(d: dict, feed_group: int, collected_utc: str):
         if "home" not in comps or "away" not in comps:
             continue
         h, a = comps["home"], comps["away"]
+        if skip is not None and skip(e, h, a):
+            continue
         st = c.get("status", e.get("status", {})).get("type", {})
         v = c.get("venue", {}) or {}
         season = (e.get("season") or {}).get("year")
         games.append(dict(
-            sport=SPORT, game_id=str(e["id"]), season=season, seasontype=(e.get("season") or {}).get("type"),
+            sport=sport, game_id=str(e["id"]), season=season, seasontype=(e.get("season") or {}).get("type"),
             week=(e.get("week") or {}).get("number"),
             kickoff_utc=pd.Timestamp(e["date"]).tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
             home_id=str(h["team"]["id"]), away_id=str(a["team"]["id"]),
-            home_name=h["team"].get("location") or h["team"].get("displayName"),
-            away_name=a["team"].get("location") or a["team"].get("displayName"),
+            home_name=(h["team"].get("displayName") if full_names else h["team"].get("location")) or h["team"].get("displayName"),
+            away_name=(a["team"].get("displayName") if full_names else a["team"].get("location")) or a["team"].get("displayName"),
             neutral=int(bool(c.get("neutralSite"))), conf_game=int(bool(c.get("conferenceCompetition"))),
             venue=v.get("fullName"), venue_city=(v.get("address") or {}).get("city"),
             venue_state=(v.get("address") or {}).get("state"), indoor=int(bool(v.get("indoor"))) if "indoor" in v else None,
             feed_group=feed_group, status=st.get("name"), first_seen_utc=collected_utc, updated_utc=collected_utc))
         for x in (h, a):
             t = x["team"]
-            teams.append(dict(sport=SPORT, team_id=str(t["id"]), location=t.get("location"), name=t.get("name"),
+            teams.append(dict(sport=sport, team_id=str(t["id"]), location=t.get("location"), name=t.get("name"),
                               abbr=t.get("abbreviation"), display_name=t.get("displayName"),
                               short_name=t.get("shortDisplayName"), updated_utc=collected_utc))
         if st.get("state") == "post" and st.get("completed") and num(h.get("score")) is not None and num(a.get("score")) is not None:
-            results.append(dict(sport=SPORT, game_id=str(e["id"]), home_score=num(h["score"]), away_score=num(a["score"]),
+            results.append(dict(sport=sport, game_id=str(e["id"]), home_score=num(h["score"]), away_score=num(a["score"]),
                                 status=st.get("name"), collected_utc=collected_utc, source="espn_scoreboard"))
     return games, results, teams
 

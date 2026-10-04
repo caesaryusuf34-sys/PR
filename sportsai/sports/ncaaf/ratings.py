@@ -14,10 +14,11 @@ class EloEngine:
     game whose result is available at the cutoff; `snapshot(season)` returns ratings regressed for the
     target season if the season changed. Pre-game ratings of every processed game are recorded."""
 
-    def __init__(self, games: pd.DataFrame, avail: pd.Series, div_of, K=36.0, HFA=45.0, revert=0.25):
+    def __init__(self, games: pd.DataFrame, avail: pd.Series, div_of, K=36.0, HFA=45.0, revert=0.25, init=None):
         self.g = games.reset_index(drop=True)
         self.avail = ns(avail.reset_index(drop=True))
         self.div_of = div_of
+        self.init = init or ELO_INIT
         self.K, self.HFA, self.revert = K, HFA, revert
         self.r: dict[str, float] = {}
         self.i = 0
@@ -32,12 +33,12 @@ class EloEngine:
         if self.season is not None and season != self.season:
             for t in list(self.r):
                 d = self.div_of(season - 1, t)
-                self.r[t] = ELO_INIT[d] + (1 - self.revert) * (self.r[t] - ELO_INIT[d])
+                self.r[t] = self.init[d] + (1 - self.revert) * (self.r[t] - self.init[d])
         self.season = season
 
     def rating(self, season, t):
         if t not in self.r:
-            self.r[t] = ELO_INIT[self.div_of(season, t)]
+            self.r[t] = self.init[self.div_of(season, t)]
         return self.r[t]
 
     def advance(self, cutoff):

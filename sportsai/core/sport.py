@@ -58,4 +58,7 @@ def get_adapter(sport: str, settings) -> SportAdapter:
     if sport in ("ncaaf", "cfb", "college-football"):
         from ..sports.ncaaf.adapter import NCAAFAdapter
         return NCAAFAdapter(settings)
-    raise KeyError(f"unknown sport {sport!r}; available: ncaaf")
+    if sport in ("nfl",):
+        from ..sports.nfl.adapter import NFLAdapter
+        return NFLAdapter(settings)
+    raise KeyError(f"unknown sport {sport!r}; available: ncaaf, nfl")
