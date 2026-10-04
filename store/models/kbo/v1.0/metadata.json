@@ -1,0 +1,202 @@
+{
+ "sport": "kbo",
+ "version": "v1.0",
+ "created_utc": "2026-10-04T12:36:05Z",
+ "parent": null,
+ "kind": "bootstrap",
+ "config": {
+  "features": [
+   "elo_diff",
+   "pts_margin_pred",
+   "pts_total_pred",
+   "team_diff",
+   "sp_eff_diff",
+   "sp_known_h",
+   "sp_known_a",
+   "sp_rest_h",
+   "sp_rest_a",
+   "form_diff",
+   "rest_diff",
+   "early",
+   "n_prior_h",
+   "n_prior_a",
+   "conf_game"
+  ],
+  "total_features": [
+   "pts_total_pred",
+   "park_h",
+   "off_sum",
+   "def_sum",
+   "sp_eff_sum",
+   "early",
+   "conf_game"
+  ],
+  "explain_features": [
+   "elo_diff",
+   "pts_margin_pred",
+   "pts_total_pred",
+   "team_diff",
+   "sp_eff_diff",
+   "sp_known_h",
+   "sp_known_a",
+   "sp_rest_h",
+   "sp_rest_a",
+   "form_diff",
+   "rest_diff",
+   "early",
+   "n_prior_h",
+   "n_prior_a",
+   "conf_game"
+  ],
+  "members": {
+   "elo": {},
+   "scoring": {},
+   "logistic": {
+    "C": 0.05
+   },
+   "gbm": {
+    "n_estimators": 250,
+    "learning_rate": 0.02,
+    "num_leaves": 7,
+    "min_child_samples": 80,
+    "reg_lambda": 10.0
+   },
+   "margin_ridge": {
+    "alpha": 30.0
+   },
+   "gbm_margin": {
+    "n_estimators": 250,
+    "learning_rate": 0.02,
+    "num_leaves": 7,
+    "min_child_samples": 80,
+    "reg_lambda": 10.0
+   }
+  },
+  "ensemble": "simplex",
+  "stack_context": [],
+  "calibration": "none",
+  "half_life_days": null,
+  "min_train_season": 2022,
+  "holdout_frac": 0.2
+ },
+ "features": [
+  "elo_diff",
+  "pts_margin_pred",
+  "pts_total_pred",
+  "team_diff",
+  "sp_eff_diff",
+  "sp_known_h",
+  "sp_known_a",
+  "sp_rest_h",
+  "sp_rest_a",
+  "form_diff",
+  "rest_diff",
+  "early",
+  "n_prior_h",
+  "n_prior_a",
+  "conf_game"
+ ],
+ "feature_version": "kbo-f1",
+ "train_cutoff_utc": "2026-10-04T12:35:51Z",
+ "n_train": 3563,
+ "validation": {
+  "walk_forward": {
+   "n": 1500,
+   "accuracy": 0.56,
+   "brier": 0.24360626653069048,
+   "log_loss": 0.6802543697409289,
+   "ece": 0.015721833970968744,
+   "calib_intercept": 0.05111228347789684,
+   "calib_slope": 0.9919546508140038,
+   "calib_slope_se": 0.1660154650884331,
+   "margin_mae": 3.815895903032728,
+   "margin_rmse": 4.817220455522503,
+   "margin_bias": 0.14484513359391063,
+   "total_mae": 3.8202989272463546,
+   "total_bias": 0.026143000378950128
+  },
+  "by_fold": [
+   {
+    "n": 250,
+    "accuracy": 0.596,
+    "brier": 0.24466638137658206,
+    "log_loss": 0.682471355685218,
+    "ece": 0.058508311168943415,
+    "calib_intercept": 0.20287886814019632,
+    "calib_slope": 1.4272114271189025,
+    "calib_slope_se": 0.6775997137721063,
+    "margin_mae": 4.003717870593386,
+    "margin_rmse": 4.830669415766781,
+    "margin_bias": -0.4490971221923649
+   },
+   {
+    "n": 250,
+    "accuracy": 0.512,
+    "brier": 0.24766301930561008,
+    "log_loss": 0.6885143406659513,
+    "ece": 0.054243384645646105,
+    "calib_intercept": 0.04694570798082439,
+    "calib_slope": 0.6814990928514701,
+    "calib_slope_se": 0.3908765743641009,
+    "margin_mae": 3.547431209327564,
+    "margin_rmse": 4.504537855838187,
+    "margin_bias": 0.06607841266912379
+   },
+   {
+    "n": 250,
+    "accuracy": 0.58,
+    "brier": 0.24170221303878667,
+    "log_loss": 0.6765112707757271,
+    "ece": 0.040853387835548004,
+    "calib_intercept": -0.1735853337614436,
+    "calib_slope": 1.0234716279843588,
+    "calib_slope_se": 0.3331302419759159,
+    "margin_mae": 3.576256507048438,
+    "margin_rmse": 4.700973624953356,
+    "margin_bias": 0.6011203538959744
+   },
+   {
+    "n": 250,
+    "accuracy": 0.556,
+    "brier": 0.2466150062798581,
+    "log_loss": 0.6863692893222992,
+    "ece": 0.03306830235734941,
+    "calib_intercept": 0.029457747963707308,
+    "calib_slope": 0.8067629225909699,
+    "calib_slope_se": 0.4367957040024517,
+    "margin_mae": 4.021524187651748,
+    "margin_rmse": 5.024691478323008,
+    "margin_bias": 0.26357405802391926
+   },
+   {
+    "n": 250,
+    "accuracy": 0.552,
+    "brier": 0.24051325035054666,
+    "log_loss": 0.6738039559363701,
+    "ece": 0.03674549181009651,
+    "calib_intercept": 0.13558687421523954,
+    "calib_slope": 1.4516380676097482,
+    "calib_slope_se": 0.4495193806927164,
+    "margin_mae": 3.774081104118963,
+    "margin_rmse": 4.742243820261338,
+    "margin_bias": 0.1407865015326561
+   },
+   {
+    "n": 250,
+    "accuracy": 0.564,
+    "brier": 0.24047772883275947,
+    "log_loss": 0.6738560060600082,
+    "ece": 0.03675993164996684,
+    "calib_intercept": 0.04993435417441621,
+    "calib_slope": 1.131170386315211,
+    "calib_slope_se": 0.37243522847310484,
+    "margin_mae": 3.9723645394562666,
+    "margin_rmse": 5.076602729963898,
+    "margin_bias": 0.24660859763415513
+   }
+  ],
+  "eval_games": 1500
+ },
+ "reason": "initial model; default configuration validated walk-forward on 1500 games",
+ "code_rev": "b41b670"
+}
