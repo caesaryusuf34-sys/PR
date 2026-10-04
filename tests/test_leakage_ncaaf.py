@@ -69,3 +69,20 @@ def test_batch_prediction_alignment():
         single = E.predict_games(row.to_frame().T, origin="backtest", save=False, cutoff=cut, context=False)[0]
         assert single["home_id"] == b["home_id"] == row.home_id
         assert abs(single["p_home"] - b["p_home"]) < 1e-9
+
+
+def test_nfl_truncation_invariance():
+    """Same leakage guarantee for the NFL adapter (shared football feature engine, NFL settings)."""
+    st = Store(S.db_path); ad = get_adapter("nfl", S)
+    done = st.completed_games("nfl")
+    if done.empty:
+        pytest.skip("nfl not synced")
+    fb = ad.feature_builder(st)
+    g = done[done.season == 2025].sample(6, random_state=5)
+    t = g.copy(); t["cutoff_utc"] = fb.training_cutoff(t.kickoff_utc).min()
+    cut = t.cutoff_utc.iloc[0]; dur = pd.Timedelta(hours=ad.game_duration_hours)
+    stats = st.team_game_stats("nfl")
+    fb2 = type(fb)(st.games("nfl"), done[done.kickoff_utc + dur <= cut], stats[stats.kickoff_utc + dur <= cut], ad.guard)
+    A = fb.build(t).set_index("game_id"); B = fb2.build(t).set_index("game_id")
+    num = A.select_dtypes("number").columns
+    assert np.nanmax(np.abs((A[num] - B[num]).values)) < 1e-9

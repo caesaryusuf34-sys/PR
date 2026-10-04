@@ -355,7 +355,7 @@ class NCAAFAdapter(SportAdapter):
         if row.get("early", 0):
             risks.append("early-season sample: ratings lean on last season's prior")
         if not risks:
-            risks.append("single-game variance (margin sigma ~ 16 pts)")
+            risks.append(f"single-game variance (margin sigma ~ {getattr(model, 'sigma', 14):.0f} pts)")
         notes = {
             "home_field": "neutral site" if row.neutral else f"{H} at home (scoring-model home coef {row.get('hfa_pts_coef', np.nan):.1f} pts)",
             "form": f"last-3 margin vs expectation: {H} {row.form3_h:+.1f}, {A} {row.form3_a:+.1f}",

@@ -168,6 +168,33 @@ The system therefore learns *statistically*. One upset never changes the model. 
 when it shows up across thousands of out-of-sample games and survives an independent confirmation
 window. Individual misses are listed in the report as context, never fitted.
 
+## NFL
+
+`--sport nfl` uses the same engine. ESPN serves the NFL in the same JSON format, so the NFL adapter
+(`sportsai/sports/nfl/adapter.py`) reuses ingestion, the expected-points pipeline and the
+point-in-time feature builder. Its settings:
+
+* one league;
+* Elo K = 20, home bonus 48, one-third regression to the mean between seasons;
+* a stronger preseason prior;
+* weeks 1–18 plus playoffs, with the Pro Bowl excluded;
+* full team names;
+* the ESPN injury report (Out / Doubtful / Questionable) captured before kickoff and shown as risk
+  context. It is not a model input, because there is no historical injury archive to train on.
+
+It has its own expected-points model (`store/nfl_ep_model.json`) and its own learning policy: a
+cycle runs every 48 new games, i.e. about every 3 weeks.
+
+```bash
+python -m sportsai --sport nfl week --report reports/NFL_week.md   # all unstarted games this week
+python -m sportsai --sport nfl predict "Chiefs at Raiders"
+python -m sportsai --sport nfl update                              # grade + learn when due
+```
+
+NFL v1.0 (bootstrapped 2026-10-04): walk-forward on 1,140 out-of-sample games (2022–2026) gives
+64.0% accuracy, log loss 0.637, Brier 0.224 and margin MAE 10.1. The 2026 Week 4 picks were frozen at
+10:43:44Z, before the first kickoff (13:30Z), in commit 48557b4. See `reports/NFL_2026_W4_PREDICTIONS.md`.
+
 ## Adding another sport
 
 Implement `SportAdapter` and `FeatureBuilder` (see `core/sport.py`) and register the adapter in
