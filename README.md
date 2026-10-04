@@ -73,13 +73,15 @@ sportsai/
     sport.py                SportAdapter / FeatureBuilder interfaces + adapter registry
   models/ensemble.py        Elo, adjusted-scoring, logistic, LightGBM, margin ridge, GBM margin;
                             simplex or stacked ensemble; none/Platt/isotonic calibration
+  sports/baseball/          ── MLB / KBO / NPB / CPBL adapters (see "Baseball" below) ──
   sports/ncaaf/             ── NCAA football adapter ──
     espn.py, parse.py       ESPN public JSON API → rows (schedule / results / box score / plays)
     stats.py                expected-points model (versioned) → per team-game efficiency stats
     ratings.py              MOV Elo engine + opponent-adjusted ridge ratings
     features.py             point-in-time feature builder
     adapter.py              ingestion, team resolution, game lookup, explanations, subgroups
-store/                      PERSISTENT MEMORY (commit it): sportsai.db, models/<sport>/<version>/,
+store/                      PERSISTENT MEMORY (commit it): sportsai.db (football), mlb.db, kbo.db, npb.db,
+                            cpbl.db (one per baseball league), models/<sport>/<version>/,
                             reports/<sport>/<learning run>.md|json, ncaaf_ep_model.json
 cache/                      rebuildable: raw ESPN summaries, scoreboards, feature cache
 tests/                      unit tests + leakage integration tests
@@ -194,6 +196,114 @@ python -m sportsai --sport nfl update                              # grade + lea
 NFL v1.0 (bootstrapped 2026-10-04): walk-forward on 1,140 out-of-sample games (2022–2026) gives
 64.0% accuracy, log loss 0.637, Brier 0.224 and margin MAE 10.1. The 2026 Week 4 picks were frozen at
 10:43:44Z, before the first kickoff (13:30Z), in commit 48557b4. See `reports/NFL_2026_W4_PREDICTIONS.md`.
+
+## Baseball: MLB, KBO, NPB, CPBL
+
+The baseball engine is the NCAAF/NFL system with one adapter per league (`--sport mlb|kbo|npb|cpbl`).
+The database layout, the immutable prediction log, point-in-time features, the walk-forward learner,
+promotion gates, the model registry and the leakage audit are the same code. Each league has its own
+database file (`store/<league>.db`) and its own model versions (`store/models/<league>/`).
+
+```bash
+python -m sportsai                                  # interactive menu: choose the league, then today / tomorrow / a date / a matchup
+python -m sportsai --sport kbo today                # every not-yet-started game today (league-local date)
+python -m sportsai --sport npb tomorrow --report reports/NPB_tomorrow.md
+python -m sportsai --sport mlb day --date 2026-10-05
+python -m sportsai --sport cpbl predict "Brothers vs Monkeys"
+python -m sportsai --sport mlb update               # sync -> grade -> learn when due
+python -m sportsai --sport mlb bootstrap            # rebuild from scratch (downloads 2021 -> now)
+```
+
+`today` and `tomorrow` use the league's local calendar (ET, KST, JST, Taipei time). The menu shows times in
+WIB; set `SPORTSAI_DISPLAY_TZ` to change that. Started games are listed with their score and are never
+predicted blind. Add `--include-started` to predict them as labelled, non-blind backtests.
+
+### Data sources (public, no key)
+
+| league | schedule / results | announced starters | box scores (pitching lines) |
+|---|---|---|---|
+| MLB | statsapi.mlb.com | `probablePitcher` (schedule) | statsapi box score |
+| KBO | koreabaseball.com game list (official) | game list, with player ids | not used: no compact source, so the KBO model has no line-based features |
+| NPB | npb.jp monthly schedule (official) | npb.jp 予告先発 page, with player ids | npb.jp box score |
+| CPBL | Yahoo Sports API (cpbl.com.tw refuses non-Taiwan clients) | **none**: the team's recent rotation average is used | Yahoo box score |
+
+### Model
+
+Features are rebuilt at the prediction cutoff from games that had finished by then:
+
+* **Elo**: margin-aware, with home edge and regression between seasons.
+* **Run model**: a joint ridge regression of runs per team-game,
+  `runs = mu + offense[team] + defense[opponent] + 0.6 * starter[opponent SP] + home`. It is shrunk
+  toward last season's final team and pitcher ratings. It gives the projected score, margin and total.
+* **Starting pitchers**: the announced starter. His run-prevention rating comes from the run model. Where box
+  scores exist, he also gets FIP-type, runs-per-9, (K-BB)/9 and innings-per-start rates. These use the
+  current season plus a half-weighted previous season, regressed to the league. Days of rest are included.
+  An unannounced starter (TBD) is replaced by the average of the team's last five starters and flagged.
+* **Bullpen**: a regressed FIP-type rate, plus relief innings over the last 3 days (fatigue).
+* **Context**: form against Elo expectation, rest, games played, same-league vs interleague, park run factor.
+
+The ensemble is the shared one: Elo, run-model, logistic, LightGBM, margin ridge and GBM margin, with
+simplex weights. The confidence score (1–10) is scaled to baseball, where a 70% pick is already a strong
+edge. It is lowered for member disagreement, a TBD starter or an early-season sample.
+
+**Starters and leakage.** An announced starter is pre-game information. The `starters` table stores every
+announcement with its capture time, and a TBD is stored as a row of its own. Features use the latest
+announcement captured at or before the cutoff. A historical `backfill` starter is used only when nothing
+was captured before the game, which applies to training and backtests only. Before a live prediction, the
+engine records the announcement state, so `audit` rebuilds identical features after the actual starter
+is known (`tests/test_baseball.py`).
+
+**Ties.** NPB, KBO and CPBL games can end tied. `P(win)` is the probability for a decided game. A tied
+game voids the pick, like a push: it is not graded and it is excluded from training.
+
+### Validation (v1.0, bootstrapped 2026-10-04, walk-forward, out-of-sample)
+
+| league | games trained (2022→) | OOS games | accuracy | log loss | Brier | ECE | run-margin MAE |
+|---|---|---|---|---|---|---|---|
+| MLB | 12,332 | 3,000 | 55.8% | 0.680 | 0.243 | 0.018 | 3.48 |
+| KBO | 3,563 | 1,500 | 56.0% | 0.680 | 0.244 | 0.016 | 3.82 |
+| NPB | 4,252 | 1,500 | 56.4% | 0.678 | 0.242 | 0.025 | 3.01 |
+| CPBL | 1,681 | 756 | 53.7% | 0.687 | 0.247 | 0.022 | 3.31 |
+
+A coin flip scores log loss 0.693. Single baseball games are close to it: good MLB models and the betting
+market sit near 0.675–0.68 and 56–58% accuracy. The MLB builder constants were checked only on games before
+2025, and no variant changed out-of-sample log loss by more than 0.0001. The 2025–2026 numbers above are
+therefore clean. CPBL is the weakest league: it has 6 balanced teams, few games and no announced starters.
+
+Learning policy per league: a cycle runs every 150 new games (MLB), 60 (KBO, NPB) or 40 (CPBL), with smaller
+confirmation windows for the smaller leagues. The promotion gates are unchanged.
+
+First blind picks, frozen 2026-10-04 12:38–12:39Z before each first pitch, are in `reports/MLB_2026-10-04_PREDICTIONS.md`,
+`reports/KBO_2026-10-05_PREDICTIONS.md`, `reports/NPB_2026-10-05_PREDICTIONS.md` and `reports/CPBL_2026-10-05_PREDICTIONS.md`.
+
+### Known gaps
+
+* **NPB postseason**: the Climax Series and Japan Series are not ingested yet. NPB covers the regular season and interleague only.
+* **CPBL**: no probable-starter feed is reachable from here, so every CPBL game uses rotation averages.
+* **KBO**: there are no pitching lines, so starter quality comes from the run model alone.
+* **Injuries, lineups, weather and betting lines** are not model inputs. There is no historical archive to train on.
+* Pitcher names are shown as the official source writes them: Korean for KBO, Japanese for NPB, ids for CPBL.
+
+### Cara pakai (Bahasa Indonesia)
+
+```bash
+pip install -r requirements.txt
+python -m sportsai                 # menu: 1 MLB, 2 KBO, 3 NPB, 4 CPBL -> lalu 1 prediksi hari ini, 2 besok, 3 tanggal, 4 satu laga ...
+```
+
+1. **Pilih liga.** Kalau model liga itu belum ada, menu menawarkan untuk mengunduh data 2021–sekarang dan
+   melatihnya.
+2. **Pilih aksi:**
+   * prediksi hari ini, besok atau tanggal tertentu (tanggal lokal liga);
+   * prediksi satu laga, misalnya `LG vs KIA` atau `Yankees @ Red Sox`;
+   * jadwal dan starter;
+   * status model dan rekor;
+   * riwayat prediksi yang sudah dinilai;
+   * update dan belajar.
+3. **Sebelum memprediksi**, sistem selalu memperbarui data dulu: hasil laga baru masuk, prediksi lama
+   dinilai, dan model dilatih ulang bila waktunya tiba. Setiap prediksi dicatat permanen, lengkap dengan
+   hash, lalu dinilai otomatis setelah laga selesai.
+4. **Laga seri** (NPB, KBO, CPBL) membatalkan pick, seperti *push*.
 
 ## Adding another sport
 

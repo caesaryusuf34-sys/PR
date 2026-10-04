@@ -2,3 +2,7 @@
 # then persist the database/model registry by committing store/ (the system's memory).
 0 */6 * * *  cd /path/to/repo && python -m sportsai update >> cache/update.log 2>&1 && \
              git add store && git commit -qm "sportsai: scheduled update" && git push -q
+
+# Baseball leagues (MLB, KBO, NPB, CPBL): same loop, one database per league (store/<league>.db).
+7 */3 * * *  cd /path/to/repo && for s in mlb kbo npb cpbl; do python -m sportsai --sport $s update; done >> cache/update.log 2>&1 && \
+             git add store && git commit -qm "sportsai: scheduled baseball update" && git push -q

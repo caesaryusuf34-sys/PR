@@ -32,8 +32,9 @@ def confidence_score(p, p_std, split, early, qb_change):
 class Engine:
     def __init__(self, sport: str = "ncaaf", settings: Settings | None = None):
         self.S = (settings or Settings()).ensure()
-        self.store = Store(self.S.db_path)
         self.adapter = get_adapter(sport, self.S)
+        # football shares sportsai.db; each baseball league keeps its own database file (store/<league>.db)
+        self.store = Store(self.S.store_dir / getattr(self.adapter, "db_file", self.S.db_path.name))
         self.sport = self.adapter.sport
         if getattr(self.adapter, "policy_overrides", None):     # sport-specific learning policy
             import dataclasses
@@ -64,6 +65,8 @@ class Engine:
                              FROM predictions p JOIN results r ON r.sport=p.sport AND r.game_id=p.game_id
                              WHERE p.sport=? AND p.origin IN ('live','backtest','legacy_import')
                                AND p.pred_id NOT IN (SELECT pred_id FROM prediction_annotations WHERE kind='invalid')""", (self.sport,))
+        if getattr(self.adapter, "void_ties", False):   # a tie (NPB/KBO/CPBL) voids a win/loss pick, like a push
+            q = q[q.home_score != q.away_score].reset_index(drop=True)
         if q.empty:
             return 0
         y = (q.home_score > q.away_score).astype(int); m = q.home_score - q.away_score; t = q.home_score + q.away_score
@@ -120,8 +123,12 @@ class Engine:
             origin = "live" if t < game["kickoff_utc"] else "backtest"
         else:  # hypothetical matchup: "A @ B" -> B hosts, "A vs B" -> neutral site
             home, away = (b_id, b_name), (a_id, a_name)
-            from ..sports.ncaaf.adapter import current_season
-            game = dict(game_id=None, season=current_season(t), kickoff_utc=t, home_id=home[0], away_id=away[0],
+            if hasattr(self.adapter, "current_season"):
+                season = self.adapter.current_season(t)
+            else:
+                from ..sports.ncaaf.adapter import current_season
+                season = current_season(t)
+            game = dict(game_id=None, season=season, kickoff_utc=t, home_id=home[0], away_id=away[0],
                         home_name=home[1], away_name=away[1], neutral=0 if a_at_b else 1, conf_game=0, venue=None, seasontype=2)
             origin = "hypothetical"
         return self.predict_games(pd.DataFrame([game]), origin=origin, query=text, save=save)[0]
@@ -139,6 +146,9 @@ class Engine:
         if (g.cutoff_utc > g.kickoff_utc).any():
             raise ValueError("cutoff after kickoff")
         tg = g.copy(); tg["game_id"] = tg.game_id.fillna("hypothetical")
+        if origin == "live" and hasattr(self.adapter, "before_predict"):
+            # freeze the pre-game information state (e.g. announced starters) before features are built
+            self.adapter.before_predict(self.store, tg[tg.game_id != "hypothetical"])
         fb = self.adapter.feature_builder(self.store)
         F = fb.build(tg[["game_id", "season", "kickoff_utc", "home_id", "away_id", "neutral", "conf_game", "cutoff_utc"]])
         # the builder returns rows sorted by cutoff; re-align them with the input game order
@@ -150,7 +160,10 @@ class Engine:
         for i in range(len(F)):
             row, pr, gi = F.iloc[i], P.iloc[i], g.iloc[i]
             p = float(pr.p_home)
-            conf = confidence_score(p, float(pr.p_std), int(pr.models_split), float(row.early), float(row.qb_change_h + row.qb_change_a > 0))
+            if hasattr(self.adapter, "confidence"):
+                conf = self.adapter.confidence(p, pr, row)
+            else:
+                conf = confidence_score(p, float(pr.p_std), int(pr.models_split), float(row.early), float(row.qb_change_h + row.qb_change_a > 0))
             total = float(pr.total) if pd.notna(pr.total) else np.nan
             margin = float(pr.margin)
             ph, pa = max((total + margin) / 2, 0), max((total - margin) / 2, 0)
@@ -173,15 +186,20 @@ class Engine:
                        explanation_json=json.dumps(expl, default=str), context_json=json.dumps(ctx, default=str),
                        snapshot_sha256=snapshot_hash(snap))
             if save:
-                dup = self.store.df("""SELECT pred_id FROM predictions WHERE sport=? AND game_id IS ? AND model_version=?
+                dup = self.store.df("""SELECT pred_id, created_utc, data_cutoff_utc, snapshot_sha256 FROM predictions
+                                       WHERE sport=? AND game_id IS ? AND model_version=?
                                        AND origin=? AND features_json=? AND home_id=? AND away_id=?""",
                                     (self.sport, gi.game_id, version, origin, rec["features_json"], gi.home_id, gi.away_id))
                 if len(dup):   # same game, model and identical inputs -> identical prediction; keep the original row
                     rec["pred_id"], rec["duplicate_of_existing"] = dup.pred_id.iloc[0], True
+                    for k in ("created_utc", "data_cutoff_utc", "snapshot_sha256"):   # report the logged row, not this re-run
+                        rec[k] = dup[k].iloc[0]
                 else:
                     rec["pred_id"] = self.store.insert_prediction(rec)
             rec["explanation"], rec["context"], rec["members"] = expl, ctx, members
             rec["venue"] = gi.get("venue")
+            rec["start_label"] = getattr(self.adapter, "start_label", "kickoff")
+            rec["score_decimals"] = getattr(self.adapter, "score_decimals", 0)
             out.append(rec)
         return out
 
@@ -193,11 +211,12 @@ class Engine:
         e = rec["explanation"]
         tag = {"live": "BLIND pre-game prediction", "backtest": "backtest (game already started — not blind)",
                "hypothetical": "hypothetical matchup (no scheduled game found)"}.get(rec["origin"], rec["origin"])
+        dp = rec.get("score_decimals", 0)
         L = [f"{A} @ {H}" + (" (neutral site)" if rec["neutral"] else ""),
-             f"[{tag} · model {rec['model_version']} · data cutoff {rec['data_cutoff_utc']} · kickoff {rec['kickoff_utc']}]", "",
+             f"[{tag} · model {rec['model_version']} · data cutoff {rec['data_cutoff_utc']} · {rec.get('start_label', 'kickoff')} {rec['kickoff_utc']}]", "",
              f"Prediction: {winner}",
              f"Win Probability: {A} {100 * (1 - p):.0f}% / {H} {100 * p:.0f}%",
-             f"Projected Score: {A} {rec['proj_away']:.0f}–{rec['proj_home']:.0f} {H}",
+             f"Projected Score: {A} {rec['proj_away']:.{dp}f}–{rec['proj_home']:.{dp}f} {H}",
              f"Projected Margin: {abs(rec['pred_margin']):.1f}",
              f"Upset Probability: {100 * rec['upset_prob']:.0f}%",
              f"Confidence: {rec['confidence']:.1f}/10", "", "Key Factors:", ""]
@@ -216,6 +235,30 @@ class Engine:
             L.append(f"\n{'already logged' if rec.get('duplicate_of_existing') else 'logged'} as prediction {rec['pred_id']} "
                      f"(snapshot sha256 {rec['snapshot_sha256'][:16]}…)")
         return "\n".join(L)
+
+    def games_on(self, local_date) -> pd.DataFrame:
+        """Scheduled games whose start falls on `local_date` in the league's local time zone."""
+        tz = getattr(self.adapter, "local_tz", "America/New_York")
+        g = self.store.games(self.sport)
+        day = pd.Timestamp(local_date).date()
+        g = g[g.kickoff_utc.dt.tz_convert(tz).dt.date == day]
+        if hasattr(self.adapter, "playable"):
+            g = g[self.adapter.playable(g)]
+        return g.sort_values(["kickoff_utc", "game_id"])
+
+    def predict_day(self, local_date, save: bool = True, include_started: bool = False) -> tuple[list[dict], pd.DataFrame]:
+        """Blind predictions for every not-yet-started game on a league-local date. Games that already
+        started are returned separately (and, with include_started, predicted as non-blind backtests
+        with a cutoff at their first pitch)."""
+        g = self.games_on(local_date)
+        res = set(self.store.df("SELECT game_id FROM results WHERE sport=?", (self.sport,)).game_id)
+        started = g[(g.kickoff_utc <= now()) | g.game_id.isin(res)]
+        todo = g[~g.game_id.isin(started.game_id)]
+        recs = self.predict_games(todo, origin="live", save=save) if len(todo) else []
+        if include_started and len(started):
+            for k, grp in started.groupby("kickoff_utc"):
+                recs += self.predict_games(grp, origin="backtest", save=save, cutoff=min(k, now()), context=False)
+        return recs, started
 
     def predict_week(self, save: bool = True) -> tuple[list[dict], pd.DataFrame]:
         """Predict every not-yet-started game on the league's current-week scoreboard."""
@@ -240,18 +283,26 @@ class Engine:
                      f"log loss {w.get('log_loss', 0):.3f}, Brier {w.get('brier', 0):.3f}, margin MAE {w.get('margin_mae', 0):.1f}")
         if len(excluded):
             L.append("- Not predicted (already started or final at freeze): " + "; ".join(f"{r.away_name} @ {r.home_name}" for r in excluded.itertuples()))
-        L.append("- Betting lines are not model inputs. Injury reports are shown as risk context only (no historical injury data to train on).")
+        baseball = bool(recs) and recs[0].get("start_label") == "first pitch"
+        if baseball:
+            L.append("- Betting lines are not model inputs. Starting pitchers are the announced probables as captured at the freeze "
+                     "(TBD = the team's recent rotation on average). A tied game (NPB/KBO/CPBL) voids the pick.")
+        else:
+            L.append("- Betting lines are not model inputs. Injury reports are shown as risk context only (no historical injury data to train on).")
         L += ["", "## Games", ""]
         for r in recs:
             L += ["```", Engine.format(r), "```", ""]
-        L += ["## Summary", "", "| Game | Kickoff (UTC) | Pick | Win % | Projected score | Upset % | Confidence | Flags |", "|---|---|---|---|---|---|---|---|"]
+        dp = recs[0].get("score_decimals", 0) if recs else 0
+        start = (recs[0].get("start_label", "kickoff") if recs else "kickoff").capitalize()
+        L += ["## Summary", "", f"| Game | {start} (UTC) | Pick | Win % | Projected score | Upset % | Confidence | Flags |", "|---|---|---|---|---|---|---|---|"]
         for r in recs:
             p = r["p_home"]; pick = r["home_name"] if p >= 0.5 else r["away_name"]
             flags = []
             if int(r["members"].get("models_split", 0) if isinstance(r["members"], dict) else 0): flags.append("split")
             if r["explanation"].get("injury_flags"): flags.append("injuries: " + ", ".join(r["explanation"]["injury_flags"][:2]))
+            if "starter not announced" in r["explanation"].get("main_risk", ""): flags.append("starter TBD")
             L.append(f"| {r['away_name']} @ {r['home_name']}{' (N)' if r['neutral'] else ''} | {r['kickoff_utc'][5:16].replace('T', ' ')} | {pick} | "
-                     f"{100 * max(p, 1 - p):.0f}% | {r['away_name']} {r['proj_away']:.0f}–{r['proj_home']:.0f} {r['home_name']} | "
+                     f"{100 * max(p, 1 - p):.0f}% | {r['away_name']} {r['proj_away']:.{dp}f}–{r['proj_home']:.{dp}f} {r['home_name']} | "
                      f"{100 * r['upset_prob']:.0f}% | {r['confidence']:.1f} | {'; '.join(flags)} |")
         srt = sorted(recs, key=lambda r: -max(r["p_home"], 1 - r["p_home"]))
         L += ["", "**Most confident:** " + ", ".join(f"{(r['home_name'] if r['p_home'] >= .5 else r['away_name'])} ({100 * max(r['p_home'], 1 - r['p_home']):.0f}%)" for r in srt[:4])]

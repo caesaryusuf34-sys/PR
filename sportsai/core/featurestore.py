@@ -30,6 +30,8 @@ class FeatureStore:
             cache = cache[cache.game_id.isin(done.game_id)]
             ng, nst = fb.visible_counts(cache.cutoff_utc)
             stale = (cache.n_games_visible.values != ng) | (cache.n_stats_visible.values != nst)
+            if hasattr(fb, "row_signature"):     # pre-game inputs that are not time-indexed (e.g. announced starters)
+                stale |= cache.row_signature.astype(str).values != fb.row_signature(cache)
             cache = cache[~stale]
         todo = done[~done.game_id.isin(cache.game_id)] if len(cache) else done
         if len(todo):

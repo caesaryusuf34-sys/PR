@@ -61,4 +61,7 @@ def get_adapter(sport: str, settings) -> SportAdapter:
     if sport in ("nfl",):
         from ..sports.nfl.adapter import NFLAdapter
         return NFLAdapter(settings)
-    raise KeyError(f"unknown sport {sport!r}; available: ncaaf, nfl")
+    from ..sports.baseball.leagues import LEAGUES
+    if sport in LEAGUES:
+        return LEAGUES[sport](settings)
+    raise KeyError(f"unknown sport {sport!r}; available: ncaaf, nfl, " + ", ".join(LEAGUES))

@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS games (               -- PRE-GAME: schedule facts onl
   neutral INTEGER DEFAULT 0, conf_game INTEGER DEFAULT 0,
   venue TEXT, venue_city TEXT, venue_state TEXT, indoor INTEGER,
   feed_group INTEGER, status TEXT,
-  first_seen_utc TEXT, updated_utc TEXT,
+  first_seen_utc TEXT, updated_utc TEXT, source_ref TEXT,
   PRIMARY KEY (sport, game_id));
 CREATE INDEX IF NOT EXISTS ix_games_kick ON games(sport, kickoff_utc);
 
@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS team_game_stats (     -- POST-GAME
 CREATE TABLE IF NOT EXISTS pregame_context (     -- PRE-GAME, timestamped capture (forecast, records, ref. line)
   sport TEXT NOT NULL, game_id TEXT NOT NULL, captured_utc TEXT NOT NULL, context_json TEXT,
   PRIMARY KEY (sport, game_id, captured_utc));
+
+CREATE TABLE IF NOT EXISTS starters (            -- PRE-GAME (baseball): announced starting pitchers
+  -- source='probable': announcement as seen at captured_utc (pitcher_id NULL = not announced yet / TBD)
+  -- source='backfill': historical announced starter, recorded after the fact (training/backtests only)
+  sport TEXT NOT NULL, game_id TEXT NOT NULL, side TEXT NOT NULL CHECK (side IN ('home','away')),
+  team_id TEXT, pitcher_id TEXT, pitcher_name TEXT,
+  source TEXT NOT NULL CHECK (source IN ('probable','backfill')), captured_utc TEXT NOT NULL,
+  PRIMARY KEY (sport, game_id, side, source, captured_utc));
 
 CREATE TABLE IF NOT EXISTS predictions (         -- PRE-GAME, append-only
   pred_id TEXT PRIMARY KEY, sport TEXT NOT NULL, game_id TEXT, query TEXT,
@@ -125,6 +133,9 @@ class Store:
         self.con = sqlite3.connect(str(path), timeout=60)
         self.con.execute("PRAGMA foreign_keys=ON")
         self.con.executescript(SCHEMA)
+        if "source_ref" not in {r[1] for r in self.con.execute("PRAGMA table_info(games)")}:
+            # migration: the data source's own key for a game (box-score path, feed id, ...)
+            self.con.execute("ALTER TABLE games ADD COLUMN source_ref TEXT")
 
     # ------------------------------------------------------------------ generic
     @contextmanager
@@ -177,6 +188,33 @@ class Store:
         with self.tx() as c:
             c.execute("INSERT OR IGNORE INTO pregame_context VALUES (?,?,?,?)",
                       (sport, game_id, iso(now()), json.dumps(context, default=str)))
+
+    def add_starters(self, sport: str, rows: list[dict], captured_utc: str) -> int:
+        """Record announced starting pitchers. 'probable' rows are appended only when the announcement
+        differs from the latest one already stored for that game/side (the history stays queryable by
+        time); a 'backfill' row is written once per game/side."""
+        if not rows:
+            return 0
+        cur = self.df("""SELECT game_id, side, source, pitcher_id FROM starters s WHERE sport=? AND captured_utc =
+                         (SELECT MAX(captured_utc) FROM starters t WHERE t.sport=s.sport AND t.game_id=s.game_id
+                          AND t.side=s.side AND t.source=s.source)""", (sport,))
+        last = {(r.game_id, r.side, r.source): r.pitcher_id for r in cur.itertuples()}
+        new = []
+        for r in rows:
+            key = (r["game_id"], r["side"], r["source"])
+            pid = None if r.get("pitcher_id") in (None, "", "None") else str(r["pitcher_id"])
+            if key in last and (r["source"] == "backfill" or last[key] == pid):
+                continue
+            last[key] = pid
+            new.append((sport, r["game_id"], r["side"], r.get("team_id"), pid, r.get("pitcher_name"), r["source"], captured_utc))
+        with self.tx() as c:
+            c.executemany("INSERT OR IGNORE INTO starters VALUES (?,?,?,?,?,?,?,?)", new)
+        return len(new)
+
+    def starters(self, sport: str) -> pd.DataFrame:
+        s = self.df("SELECT * FROM starters WHERE sport=?", (sport,))
+        s["captured_utc"] = pd.to_datetime(s.captured_utc, utc=True)
+        return s
 
     # ------------------------------------------------------------------ post-game
     def upsert_results(self, rows):

@@ -18,6 +18,7 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
       - run: python -m sportsai update
+      - run: for s in mlb kbo npb cpbl; do python -m sportsai --sport "$s" update || true; done
       - run: |
           git config user.name "sportsai-bot"
           git config user.email "sportsai-bot@users.noreply.github.com"

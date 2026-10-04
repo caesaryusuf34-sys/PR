@@ -115,7 +115,8 @@ class Learner:
         else:
             add("calibration_platt", "routine calibration check", lambda c: c.update(calibration="platt"))
         sig = diag.get("significant_subgroups", [])
-        ctx = sorted({f for s in sig for f in SUBGROUP_FEATURES.get(s, []) if f in self.available})
+        sub_feats = {**SUBGROUP_FEATURES, **getattr(self.E.adapter, "subgroup_features", {})}
+        ctx = sorted({f for s in sig for f in sub_feats.get(s, []) if f in self.available})
         if ctx:
             add("stack_subgroup_context", f"systematic bias in subgroups {sig}", lambda c: c.update(ensemble="stack", stack_context=ctx))
         resid = [f for f in diag.get("residual_signal_features", []) if f in self.available][:6]

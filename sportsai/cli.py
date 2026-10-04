@@ -7,6 +7,13 @@
   python -m sportsai status | history | audit | versions
   python -m sportsai bootstrap [--as-of ISO]         # build the database and the first model
   python -m sportsai daemon --every-hours 6          # keep the loop running unattended
+
+Baseball (MLB, KBO, NPB, CPBL) - same engine, one adapter per league:
+  python -m sportsai menu                            # interactive: choose a league, then today / tomorrow / ...
+  python -m sportsai --sport kbo today               # every not-yet-started game today (league-local date)
+  python -m sportsai --sport npb tomorrow
+  python -m sportsai --sport mlb day --date 2026-10-05
+  python -m sportsai --sport cpbl predict "Brothers vs Monkeys"
 """
 from __future__ import annotations
 import argparse, json, sys, time
@@ -22,8 +29,16 @@ def _print(obj):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="sportsai")
-    ap.add_argument("--sport", default="ncaaf")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--sport", default="ncaaf", help="ncaaf, nfl, mlb, kbo, npb, cpbl")
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("menu", help="interactive baseball menu (MLB / KBO / NPB / CPBL)")
+    for name in ("today", "tomorrow", "day"):
+        p = sub.add_parser(name, help="predict every not-yet-started game on a league-local date")
+        if name == "day":
+            p.add_argument("--date", required=True, help="YYYY-MM-DD in the league's local time zone")
+        p.add_argument("--no-update", action="store_true"); p.add_argument("--no-save", action="store_true")
+        p.add_argument("--include-started", action="store_true", help="also predict started/final games as non-blind backtests")
+        p.add_argument("--report", default=None, help="write a markdown report to this path")
     p = sub.add_parser("predict"); p.add_argument("query", nargs="+"); p.add_argument("--no-update", action="store_true")
     p.add_argument("--no-learn", action="store_true"); p.add_argument("--no-save", action="store_true"); p.add_argument("--json", action="store_true")
     p = sub.add_parser("slate"); p.add_argument("--date", required=True, help="YYYYMMDD (US/Eastern game day)")
@@ -41,6 +56,9 @@ def main(argv=None):
     p = sub.add_parser("import-legacy"); p.add_argument("--predictions", default="predictions.csv"); p.add_argument("--features", default="features.csv")
     p = sub.add_parser("daemon"); p.add_argument("--every-hours", type=float, default=6.0)
     a = ap.parse_args(argv)
+    if a.cmd in (None, "menu"):
+        from .sports.baseball.menu import run_menu
+        return run_menu()
     E = Engine(a.sport)
 
     if a.cmd == "predict":
@@ -67,6 +85,22 @@ def main(argv=None):
                 print("no unstarted games on that date"); return
             for r in E.predict_games(g, origin="live", save=not a.no_save):
                 print(E.format(r)); print("-" * 70)
+    elif a.cmd in ("today", "tomorrow", "day"):
+        if not a.no_update:
+            E.auto_update()
+        local_today = now().tz_convert(getattr(E.adapter, "local_tz", "America/New_York")).date()
+        day = {"today": local_today, "tomorrow": local_today + pd.Timedelta(days=1)}.get(a.cmd) or pd.Timestamp(a.date).date()
+        recs, started = E.predict_day(day, save=not a.no_save, include_started=a.include_started)
+        print(f"{E.sport.upper()} {day}: {len(recs)} prediction(s)")
+        for r in recs:
+            print(E.format(r)); print("-" * 70)
+        if len(started) and not a.include_started:
+            print("not predicted (started/final):", ", ".join(f"{r.away_name} @ {r.home_name}" for r in started.itertuples()))
+        if a.report and recs:
+            ch = E.registry.champion_row()
+            md = E.week_report(recs, started if not a.include_started else started.iloc[:0], f"{E.sport.upper()} — predictions for {day}",
+                               json.loads(ch.validation_json) if ch is not None and ch.validation_json else None)
+            open(a.report, "w").write(md); print(f"report written to {a.report}")
     elif a.cmd == "week":
         if not a.no_update:
             E.auto_update()
