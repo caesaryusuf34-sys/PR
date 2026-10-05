@@ -1,6 +1,6 @@
 # NFL scorecard
 
-**Graded: 11/13 correct** (expected 8.3 from the stated probabilities) · Brier 0.184 · log loss 0.549 · margin MAE 5.7 · total MAE 10.8
+**Graded: 11/14 correct** (expected 8.9 from the stated probabilities) · Brier 0.195 · log loss 0.572 · margin MAE 5.9 · total MAE 10.6
 
 | Game | Final | Pick (prob) | Projected | Result |
 |---|---|---|---|---|
@@ -17,10 +17,10 @@
 | Los Angeles Chargers @ Seattle Seahawks | 23–30 | Seattle Seahawks (79%) | 15–26 | ✅ |
 | Kansas City Chiefs @ Las Vegas Raiders | 30–27 | Kansas City Chiefs (62%) | 24–19 | ✅ |
 | Denver Broncos @ San Francisco 49ers | 14–24 | San Francisco 49ers (59%) | 22–25 | ✅ |
+| Detroit Lions @ Carolina Panthers | 26–32 | Detroit Lions (58%) | 26–23 | ❌ |
 
 ## Not final yet (latest blind prediction)
 
 | Game | Kickoff (UTC) | Pick | Win % | Projected | Predicted at (UTC) |
 |---|---|---|---|---|---|
-| Detroit Lions @ Carolina Panthers | 10-05 00:20 | Detroit Lions | 58% | 26–23 | 10-04 23:56 |
-| Atlanta Falcons @ New Orleans Saints | 10-06 00:15 | New Orleans Saints | 53% | 21–22 | 10-04 23:56 |
+| Atlanta Falcons @ New Orleans Saints | 10-06 00:15 | New Orleans Saints | 53% | 21–22 | 10-05 14:00 |
