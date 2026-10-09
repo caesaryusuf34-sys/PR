@@ -25,7 +25,7 @@ from models import Attempt, DownloadInfo, FullTextLocation, Outcome, Paper, Prob
 from net_safety import URLValidationError
 from pdf_downloader import PdfDownloader
 from pdf_verifier import PdfVerifier
-from regulation_match import RegRef, RegVerification, reg_filename, slug_matches, verify_regulation_text
+from regulation_match import RegRef, RegVerification, reg_filename, slug_leads, slug_matches, verify_regulation_text
 from web_crawler import parse_page
 
 Emit = Callable[..., None]
@@ -41,6 +41,7 @@ class RegCandidate:
     pdfs: list = field(default_factory=list)        # [(url, label)] main document first
     related: list = field(default_factory=list)     # [(url, label)] abstract / FAQ / annexes
     page_confirmed: bool = False
+    note: str = ""
 
 
 @dataclass
@@ -112,7 +113,7 @@ class OjkRegulationSource:
             except (HttpError, URLValidationError) as exc:
                 emit("providers", f"{self.name}: {exc}", level="warning")
                 raise
-            hits = [(u, t) for u, t in results if slug_matches(ref, unquote(u), t)]
+            hits = [(u, t) for u, t in results if slug_leads(ref, unquote(u)) or slug_leads(ref, t)]
             emit("providers", f"{self.name}: {len(results)} result(s), {len(hits)} match(es) for {ref.short}")
             if hits:
                 break
@@ -134,6 +135,40 @@ class OjkRegulationSource:
             emit("crawl", f"Official page: {cand.page_url} ({len(cand.pdfs)} PDF, {len(cand.related)} companion document(s))", cand.page_url)
             cands.append(cand)
         return cands
+
+
+class JdihKemenkeuSource:
+    """JDIH Kementerian Keuangan: public JSON API (robots.txt allows it); covers UU, PP, Perpres, PMK and more."""
+    name = "jdih.kemenkeu.go.id"
+    BASE = "https://jdih.kemenkeu.go.id"
+    BENTUK = {"UU": "Undang-Undang", "PP": "Peraturan Pemerintah", "PERPRES": "Peraturan Presiden",
+              "PERPPU": "Peraturan Pemerintah Pengganti Undang-Undang", "PMK": "Peraturan Menteri"}
+
+    def __init__(self, http: HttpClient):
+        self.http = http
+
+    def applies(self, ref: RegRef) -> bool:
+        return ref.kind in self.BENTUK
+
+    def search(self, ref: RegRef, emit: Emit) -> list[RegCandidate]:
+        data = self.http.get_json(f"{self.BASE}/api/search", params={"bentuk": self.BENTUK[ref.kind], "no": ref.first_number, "tahun": ref.year})
+        out = []
+        for it in (data or {}).get("data") or []:
+            if str(it.get("no")) != ref.first_number or int(it.get("tahun") or 0) != ref.year:
+                continue
+            if it.get("bentuk") != self.BENTUK[ref.kind] and not (ref.kind == "PMK" and "PMK" in str(it.get("nomor", "")).upper()):
+                continue
+            if ref.kind == "PMK" and ref.sector and ref.sector.lstrip("0") not in re.sub(r"^.*PMK\.?", "", str(it.get("nomor", "")).upper()).split("/")[0].lstrip("0"):
+                continue
+            pdf = it.get("full_text_pdf")
+            if not pdf:
+                continue
+            slug = it.get("slug", "")
+            out.append(RegCandidate(page_url=f"{self.BASE}/dok/{slug}", title=str(it.get("judul", "")).strip(), source=self.name,
+                                    pdfs=[(urljoin(self.BASE + "/", pdf), "Fulltext")], page_confirmed=True,
+                                    note=f"status per JDIH Kemenkeu: {it.get('status', 'n/a')}"))
+        emit("providers", f"{self.name}: {len(out)} matching document(s) for {ref.short}")
+        return out
 
 
 class WebRegulationSource:
@@ -191,6 +226,7 @@ class RegulationFinder:
         self.http, self.checker, self.downloader, self.verifier = http, checker, downloader, verifier
         self.settings, self.db, self._web = settings, db, web_providers
         self.ojk = OjkRegulationSource(http, checker)
+        self.jdih = JdihKemenkeuSource(http)
 
     def find(self, ref: RegRef, emit: Emit, query: str) -> RegSearch:
         res = RegSearch(manual_links=manual_search_links(ref))
@@ -206,6 +242,15 @@ class RegulationFinder:
                 res.notes[self.ojk.name] = str(exc)
         else:
             res.notes[self.ojk.name] = "not applicable for this kind of regulation"
+        if self.jdih.applies(ref) and not any(c.pdfs for c in res.candidates):
+            try:
+                emit("providers", f"Searching JDIH Kemenkeu for {ref.short}")
+                res.candidates += self.jdih.search(ref, emit)
+                res.used.append(self.jdih.name)
+                res.notes[self.jdih.name] = "ok"
+            except (HttpError, URLValidationError) as exc:
+                res.notes[self.jdih.name] = str(exc)
+                emit("providers", f"{self.jdih.name}: {exc}", level="warning")
         # 2. verify what we have; 3. widen with web search
         if self._try_candidates(ref, res, emit, query):
             return res
@@ -282,6 +327,7 @@ class RegulationFinder:
                 res.info = DownloadInfo(path=path, sha256=dl.sha256, size_bytes=dl.size, source_url=dl.final_url or pdf,
                                         landing_url=cand.page_url, provider=cand.source, version=VersionType.PUBLISHED,
                                         verification=v.to_dict(), access_date=now_iso(), saved=bool(path))
+                res.notes["status"] = "ok: " + cand.note if cand.note else "ok"
                 res.related = [FullTextLocation(url=u, kind="pdf", version=VersionType.PUBLISHED, host_type="publisher", provider=cand.source,
                                                 is_oa=True, origin_url=cand.page_url, note=f"companion document: {lbl[:70]}")
                                for u, lbl in cand.related + [(u, l) for u, l in cand.pdfs if u != pdf]]

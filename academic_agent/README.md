@@ -31,7 +31,7 @@ It never invents a PDF address, never claims success without a validated file, a
 
 ### Regulations (SEOJK, POJK, PADK, UU, PP, PMK, PBI, SEBI …)
 Type the reference as you normally would: `SEOJK No. 19/SEOJK.06/2025`, `POJK Nomor 40 Tahun 2024`, `UU No. 27 Tahun 2022`, `23/6/PBI/2021`.
-The agent searches the **OJK regulation database** (its public search form) and, if you configured a web-search key, official `.go.id` pages and PDFs.
+The agent searches the **OJK regulation database** (its public search form), **JDIH Kemenkeu** (public JSON API: UU, PP, Perpres, PMK) and, if you configured a web-search key, official `.go.id` pages and PDFs.
 A PDF link is returned only if the regulation's identification line (e.g. "Nomor 19/SEOJK.06/2025") is printed in the PDF text; a scanned PDF
 without text is accepted only when the official page for exactly that regulation links to it, and that is stated in the result. Companion documents
 on the same page (Abstrak, FAQ, Lampiran) are listed separately, never mistaken for the regulation. If nothing is found you get official *search pages*

@@ -53,6 +53,9 @@ def ojk_web(pdf=None, results=None):
     ("23/6/PBI/2021", "PBI", "23/6", 2021, ""),
     ("Peraturan Menteri Keuangan Nomor 70/PMK.010/2016", "PMK", "70", 2016, "010"),
     ("link pdf SEOJK 19 Tahun 2025", "SEOJK", "19", 2025, ""),
+    ("UU 4/2023", "UU", "4", 2023, ""),
+    ("PP No. 71/2019", "PP", "71", 2019, ""),
+    ("POJK 40/2024", "POJK", "40", 2024, ""),
 ])
 def test_regulation_references_are_parsed(q, kind, number, year, sector):
     r = parse_regulation_ref(q)
@@ -185,3 +188,35 @@ def test_batch_size_is_capped(settings, web):
     ag = agent(settings.replace(max_batch=3), web)
     res = ag.run_batch("\n".join(f"A Totally Unknown Paper Title Number {i} qzx" for i in range(10)))
     assert len(res) == 3
+
+
+# ============================================================================ strict identity (regression: UU 4/2023)
+def test_faq_and_amending_pages_that_merely_mention_the_regulation_are_not_the_regulation(settings):
+    faq = "/id/regulasi/Pages/FAQ-Pengembangan-dan-Penguatan-Sektor-Keuangan-(UU-PPSK).aspx"
+    r = agent(settings, ojk_web(results=[(faq, "FAQ Ketentuan Terkait Dana Pensiun Pasca Berlakunya Undang-Undang Nomor 4 Tahun 2023")])).run("UU 4/2023")
+    assert r.outcome == Outcome.NOT_FOUND and not r.attempts
+
+
+def test_amending_regulation_text_mentioning_the_number_is_rejected():
+    ref = parse_regulation_ref("SEOJK No. 19/SEOJK.04/2018")
+    amending = "PERUBAHAN ATAS SURAT EDARAN OTORITAS JASA KEUANGAN NOMOR 19/SEOJK.04/2018 TENTANG LAPORAN " + "isi " * 60
+    assert verify_regulation_text(ref, amending, 3, True).verdict == "mismatch"
+    original = "SURAT EDARAN OTORITAS JASA KEUANGAN NOMOR 19/SEOJK.04/2018 TENTANG LAPORAN " + "isi " * 60
+    assert verify_regulation_text(ref, original, 3, False).verdict == "verified"
+    buried = "isi " * 1200 + " NOMOR 19/SEOJK.04/2018 " + "isi " * 60
+    assert verify_regulation_text(ref, buried, 3, True).verdict == "mismatch"
+
+
+JDIH_UU = {"data": [{"slug": "uu-4-tahun-2023", "bentuk": "Undang-Undang", "no": 4, "tahun": 2023, "nomor": "UU 4 TAHUN 2023", "status": "Berlaku",
+                     "judul": "Pengembangan dan Penguatan Sektor Keuangan", "full_text_pdf": "/api/download/ABC/UU4TAHUN2023.pdf"},
+                    {"slug": "uu-18-tahun-2023", "bentuk": "Undang-Undang", "no": 18, "tahun": 2023, "nomor": "UU 18 TAHUN 2023", "full_text_pdf": "/api/download/X/UU18.pdf"}]}
+
+
+def test_uu_is_found_through_jdih_kemenkeu_and_verified(settings):
+    import json
+    web = ojk_web(results=[]).add("https://jdih.kemenkeu.go.id/api/search", json.dumps(JDIH_UU), content_type="application/json")
+    uu_pdf = make_pdf([["UNDANG-UNDANG REPUBLIK INDONESIA", "NOMOR 4 TAHUN 2023", "TENTANG PENGEMBANGAN DAN PENGUATAN SEKTOR KEUANGAN", "x " * 60]])
+    web.add_pdf("https://jdih.kemenkeu.go.id/api/download/ABC/UU4TAHUN2023.pdf", uu_pdf)
+    r = agent(settings.replace(auto_download=False), web).run("UU 4/2023")
+    assert r.outcome == Outcome.LINK_FOUND and r.download.source_url.endswith("/UU4TAHUN2023.pdf") and "Berlaku" in r.summary
+    assert web.hits("UU18.pdf") == 0                                    # neighbouring number never fetched

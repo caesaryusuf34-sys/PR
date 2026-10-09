@@ -50,7 +50,7 @@ _NUM_NOMOR = r"(?:nomor|no\.?|nr\.?|number)?\s*"
 _SLASH = re.compile(r"(?P<n>\d{1,4}(?:\s*/\s*\d{1,3})?)\s*/\s*(?P<code>SEOJK|POJK|PADK|PBI|PPBI|PADG|SEBI|PMK)(?:\s*[.\-]?\s*(?P<sec>\d{1,3}))?\s*/\s*(?P<y>(?:19|20)\d{2})", re.I)
 # word form: "<kind> [Nomor] 40 [(/code)] Tahun 2024"
 _WORD = re.compile(_LEAD + r"(?:" + _KIND_ALT + r")\s*(?:ri|republik\s+indonesia)?\s*" + _NUM_NOMOR +
-                   r"(?P<n>\d{1,4})\s*(?:tahun|thn\.?|th\.?)\s*(?P<y>(?:19|20)\d{2})(?P<rest>.*)$", re.I | re.S)
+                   r"(?P<n>\d{1,4})\s*(?:tahun|thn\.?|th\.?|/)\s*(?P<y>(?:19|20)\d{2})(?P<rest>.*)$", re.I | re.S)
 _TENTANG = re.compile(r"\btentang\b\s*(.+)$", re.I | re.S)
 
 
@@ -158,6 +158,23 @@ def text_keys(ref: RegRef) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
+def slug_leads(ref: RegRef, slug: str) -> bool:
+    """True if a page slug / title *starts with* this regulation's identity (not just mentions it, as FAQ or amending pages do)."""
+    s = _squash(re.sub(r"\.aspx$", "", unquote_slug(slug)))
+    keys = slug_keys(ref)
+    if any(s.startswith(k) for k in keys):
+        return True
+    if not ref.slash_form and ref.kind in ("SEOJK", "POJK", "PADK"):
+        k, n = ref.kind.lower(), re.escape(ref.first_number)
+        return bool(re.match(rf"{k}[-_. ]*(?:nomor[-_. ]*)?{n}[-_. /]*(?:{k}[-_. ]*\d{{1,3}}[-_. /]*)?(?:tahun[-_. ]*)?{ref.year}", unquote_slug(slug).lower()))
+    return False
+
+
+def unquote_slug(s: str) -> str:
+    from urllib.parse import unquote
+    return unquote(s.rsplit("/", 1)[-1] if "/" in s else s)
+
+
 def slug_matches(ref: RegRef, *texts: str) -> bool:
     raw = " ".join(texts).lower()
     blob = _squash(raw)
@@ -197,9 +214,15 @@ def verify_regulation_text(ref: RegRef, text: str, pages: int, page_confirmed: b
             return RegVerification("official_page", [f"the PDF has no text layer (scanned); accepted because the official page for "
                                                       f"{ref.canonical} links to it"], **base)
         return RegVerification("unreadable", ["no extractable text (scanned) and no page evidence - cannot verify"], **base)
-    hits = [k for k in text_keys(ref) if k in squashed]
-    if hits:
-        return RegVerification("verified", [f"identification '{ref.canonical}' found in the document text"], **base)
+    # the identification line must be near the top and must not be a reference inside an amending / revoking regulation
+    positions = [(squashed.find(k), k) for k in text_keys(ref) if k in squashed]
+    if positions:
+        idx, key = min(positions)
+        before = squashed[max(0, idx - 60): idx]
+        if idx <= 3000 and not re.search(r"(perubahan|atas|mencabut|pencabutan|sebagaimana|dimaksud)", before):
+            return RegVerification("verified", [f"identification '{ref.canonical}' found at the top of the document text"], **base)
+        return RegVerification("mismatch", [f"'{ref.canonical}' is only mentioned in passing (amended/revoked/cited by this document), "
+                                            "so this looks like a different regulation"], **base)
     return RegVerification("mismatch", [f"document text does not contain '{ref.canonical}' (it may be another or an amended regulation)"], **base)
 
 

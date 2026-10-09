@@ -269,7 +269,8 @@ class ResearchAgent:
         parts = [f"**Regulation.** {md_escape(ref.canonical)} — issuer: {md_escape(ref.issuer)}."
                  + (f" Title: *{md_escape(res.paper.title)}*." if res.paper else "")]
         sources = ", ".join(res.used) or "none"
-        failed = [f"{n} ({why})" for n, why in res.notes.items() if not why.startswith("ok")]
+        failed = [f"{n} ({why})" for n, why in res.notes.items() if not why.startswith("ok") and n != "status"]
+        status_note = res.notes.get("status", "")[4:].strip(" :")
         parts.append(f"**Sources checked.** {sources}." + (f" Not used / failed: {'; '.join(failed)}." if failed else "")
                      + f" {len(res.attempts)} PDF candidate(s) examined; {r.requests_used} HTTP requests in {r.elapsed_seconds:.0f}s.")
         if info:
@@ -279,6 +280,7 @@ class ResearchAgent:
             v = info.verification or {}
             parts.append(f"**Result.** Found the official PDF [{n}] on {urlsplit(info.source_url).hostname}. It was opened and checked: "
                          f"{'; '.join(v.get('reasons', [])) or 'ok'}."
+                         + (f" {status_note[:1].upper() + status_note[1:]}." if status_note else "")
                          + (f" Saved to `{info.path}`." if info.saved else " Nothing was saved to disk (auto-download is off)."))
         elif res.outcome == Outcome.NO_FULLTEXT:
             link = cite("Official regulation page", res.candidates[0].page_url) if res.candidates else 0
