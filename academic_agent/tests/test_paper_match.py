@@ -171,3 +171,11 @@ class TestFilenameAndMisc:
     def test_markdown_escape_defuses_links_and_images(self):
         out = md_escape("![x](http://evil) [a](http://b) *b*")
         assert "[" not in out.replace("\\[", "") and "![" not in out
+
+
+def test_apa_citation_is_split_into_author_year_and_title():
+    qi = classify_query("Takidah, E., & Kassim, S. (2022). The Shariah compliance of Islamic peer-to-peer (P2P) lending practices in Indonesia: Identification of issues and the way forward")
+    assert qi.type == QueryType.AUTHOR_YEAR and qi.author == "takidah" and qi.year == 2022
+    assert qi.title.startswith("The Shariah compliance") and qi.title.endswith("the way forward")
+    full = classify_query("Smith, J. (2020). Rates and default. Journal of Finance, 12(3), 45-67.")
+    assert full.title == "Rates and default" and full.author == "smith"

@@ -183,6 +183,9 @@ _AUTHOR_YEAR = re.compile(
     r"^\(?\s*([A-Z][\w'’\-]+)(?:\s+et\s+al\.?|\s+(?:and|&)\s+[A-Z][\w'’\-]+)?\s*[,(]?\s*((?:19|20)\d{2})\)?[\s,:.\-]*(.*)$")
 
 
+_APA = re.compile(r"^(.{3,200}?)\s*\(\s*((?:19|20)\d{2})[a-z]?\s*\)\s*[.,:]?\s*(.+)$")
+
+
 @dataclass
 class QueryInfo:
     raw: str
@@ -224,6 +227,15 @@ def classify_query(raw: str) -> QueryInfo:
     if arx:
         return QueryInfo(raw=raw, type=QueryType.ARXIV, arxiv_id=arx, title=q)
     domain = detect_domain(q)
+    apa = _APA.match(q)                      # "Surname, A., & Surname, B. (2022). Title. Journal, 1(2), 3-4."
+    if apa and len(apa.group(3).split()) >= 3:
+        first = re.split(r"[,&]|\band\b", apa.group(1).strip())[0].strip().split()
+        title = apa.group(3).strip()
+        if re.search(r"\.\s+[A-Z][^.]*,\s*\d+", title):          # drop a trailing ". Journal, 12(3), 45-67"
+            title = re.split(r"\.\s+(?=[A-Z][^.]*,\s*\d+)", title, maxsplit=1)[0]
+        title = title.rstrip(" .")
+        return QueryInfo(raw=raw, type=QueryType.AUTHOR_YEAR, author=(first[-1] if first else "").lower(), year=int(apa.group(2)),
+                         title=title, domain=detect_domain(title), keywords=content_tokens(title))
     m = _AUTHOR_YEAR.match(q)
     if m and len(m.group(3).split()) >= 2:
         return QueryInfo(raw=raw, type=QueryType.AUTHOR_YEAR, author=m.group(1).lower(), year=int(m.group(2)),
