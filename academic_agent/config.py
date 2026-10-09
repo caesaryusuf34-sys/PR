@@ -115,6 +115,7 @@ class Settings:
     time_limit_seconds: float = 300.0
     results_per_provider: int = 8
     max_workers: int = 6
+    max_batch: int = 25              # titles / regulations accepted in one batch
     # files
     max_pdf_mb: int = 60
     min_pdf_bytes: int = 4096

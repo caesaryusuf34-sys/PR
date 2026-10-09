@@ -153,6 +153,15 @@ def best_title_window(title: str, text: str) -> float:
     return round(best, 4)
 
 
+@dataclass
+class TextExtract:
+    ok: bool
+    reason: str = ""
+    text: str = ""
+    pages: int = 0
+    warnings: list = field(default_factory=list)
+
+
 class PdfVerifier:
     def __init__(self, text_pages: int = 4, timeout: float = 40.0, min_bytes: int = 4096):
         self.text_pages = text_pages
@@ -190,6 +199,38 @@ class PdfVerifier:
         except Exception as exc:  # noqa: BLE001  (malformed PDFs raise many exception types)
             report.verdict, report.reasons = Verdict.CORRUPT, [f"cannot parse PDF: {type(exc).__name__}: {str(exc)[:120]}"]
         return report
+
+    def extract_text(self, path: Path | str, pages: Optional[int] = None) -> TextExtract:
+        """Structure-check a PDF and return the text of its first pages (for non-paper documents, e.g. regulations)."""
+        path = Path(path)
+        ok, why = check_structure(path, self.min_bytes)
+        if not ok:
+            return TextExtract(False, why)
+        raw = path.read_bytes()
+        if b"/Launch" in raw:
+            return TextExtract(False, "PDF contains a /Launch action - rejected")
+        warnings = ["contains active-content markers (never executed)"] if any(a in raw for a in _ACTIVE) else []
+        del raw
+        if PdfReader is None:
+            return TextExtract(False, "pypdf is not installed")
+
+        def work() -> TextExtract:
+            reader = PdfReader(str(path), strict=False)
+            if reader.is_encrypted and not reader.decrypt(""):
+                return TextExtract(False, "PDF is password-protected")
+            n = len(reader.pages)
+            chunks = []
+            for i in range(min(pages or self.text_pages, n)):
+                try:
+                    chunks.append(reader.pages[i].extract_text() or "")
+                except Exception:  # noqa: BLE001
+                    chunks.append("")
+            return TextExtract(True, "ok", _dehyphenate("\n".join(chunks))[:40000], n, warnings)
+
+        try:
+            return run_with_timeout(work, self.timeout)
+        except Exception as exc:  # noqa: BLE001
+            return TextExtract(False, f"cannot parse PDF: {type(exc).__name__}: {str(exc)[:100]}")
 
     # ------------------------------------------------------------------------------------
     def _inspect(self, path: Path, paper: Paper, report: PdfReport) -> PdfReport:

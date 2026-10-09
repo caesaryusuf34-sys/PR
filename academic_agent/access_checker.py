@@ -120,9 +120,10 @@ class AccessChecker:
                 return ProbeResult(status=ProbeStatus.NOT_FOUND, detail=f"HTTP {status}: not found", **base)
             if status >= 500:
                 return ProbeResult(status=ProbeStatus.SERVER_ERROR, detail=f"HTTP {status}: server error", **base)
+            chunks = iter(resp.iter_content(chunk_size=8192))       # ONE iterator for the whole body (a second one would be empty)
             try:
                 head = b""
-                for chunk in resp.iter_content(chunk_size=8192):
+                for chunk in chunks:
                     head += chunk
                     if len(head) >= 8192:
                         break
@@ -147,7 +148,7 @@ class AccessChecker:
                 rest = b""
                 try:
                     limit = self.settings.max_html_kb * 1024 - len(head)
-                    for chunk in resp.iter_content(chunk_size=16384):
+                    for chunk in chunks:
                         rest += chunk
                         if len(rest) >= limit:
                             break

@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 from typing import Iterable, Optional
 
 from models import FullTextLocation, Paper, QueryType, VersionType
+from regulation_match import RegRef, parse_regulation_ref
 
 # ----------------------------------------------------------------------------- normalisation
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -197,6 +198,7 @@ class QueryInfo:
     year: Optional[int] = None
     domain: str = "general"    # general | biomedical | quantitative
     keywords: list = field(default_factory=list)
+    regulation: Optional[RegRef] = None
 
 
 _BIOMED = re.compile(
@@ -220,6 +222,9 @@ def detect_domain(text: str) -> str:
 
 def classify_query(raw: str) -> QueryInfo:
     q = _WS_RE.sub(" ", (raw or "").strip().strip("\"'“”"))
+    reg = parse_regulation_ref(q)
+    if reg:
+        return QueryInfo(raw=raw, type=QueryType.REGULATION, title=reg.canonical, regulation=reg, keywords=content_tokens(reg.title))
     doi = extract_doi(q)
     if doi and (len(q) <= len(doi) + 24 or re.search(r"doi", q, re.I)):
         return QueryInfo(raw=raw, type=QueryType.DOI, doi=doi, title=q)

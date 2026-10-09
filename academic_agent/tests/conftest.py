@@ -82,12 +82,13 @@ class FakeWeb(BaseAdapter):
         super().__init__()
         self.routes: dict[str, list] = {}
         self.calls: list[str] = []
+        self.requests: list[tuple] = []
 
     def add(self, url: str, body: Body = b"", status: int = 200, content_type: str = "text/html",
-            headers: Optional[dict] = None, repeat: bool = True) -> "FakeWeb":
+            headers: Optional[dict] = None, repeat: bool = True, method: str = "*") -> "FakeWeb":
         h = {"Content-Type": content_type, **(headers or {})}
         b = body.encode() if isinstance(body, str) else body
-        self.routes.setdefault(url, []).append([status, h, b, repeat])
+        self.routes.setdefault((method, url), []).append([status, h, b, repeat])
         return self
 
     def add_pdf(self, url: str, pdf: bytes, **kw) -> "FakeWeb":
@@ -99,16 +100,18 @@ class FakeWeb(BaseAdapter):
     def hits(self, fragment: str) -> int:
         return sum(1 for c in self.calls if fragment in c)
 
-    def _lookup(self, url: str):
-        for key in (url, url.split("?")[0]):
-            if key in self.routes:
-                return self.routes[key]
+    def _lookup(self, url: str, method: str = "GET"):
+        for m in (method, "*"):
+            for key in (url, url.split("?")[0]):
+                if (m, key) in self.routes:
+                    return self.routes[(m, key)]
         return None
 
     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
         url = request.url
         self.calls.append(url)
-        queue = self._lookup(url)
+        self.requests.append((request.method, url, request.body))
+        queue = self._lookup(url, request.method)
         if queue is None:
             spec = [404, {"Content-Type": "text/html"}, b"<html><title>Not found</title><body>not found</body></html>", True]
         else:

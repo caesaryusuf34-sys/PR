@@ -12,6 +12,7 @@ class QueryType(str, enum.Enum):
     TITLE = "exact title"
     AUTHOR_YEAR = "author and year"
     TOPIC = "research topic / question"
+    REGULATION = "regulation"
 
 
 class VersionType(str, enum.Enum):
@@ -44,6 +45,7 @@ class AccessState(str, enum.Enum):
     ACCEPTED = "accepted"
     PREPRINT = "preprint"
     FULLTEXT_UNKNOWN_VERSION = "fulltext_unknown_version"
+    OFFICIAL_REGULATION = "official_regulation"
     ABSTRACT_ONLY = "abstract_only"
     INACCESSIBLE = "inaccessible"
     UNKNOWN = "unknown"
@@ -55,6 +57,7 @@ class AccessState(str, enum.Enum):
             "accepted": "Accepted manuscript (full text retrieved)",
             "preprint": "Preprint (full text retrieved; not the final published article)",
             "fulltext_unknown_version": "Full text retrieved (version not stated)",
+            "official_regulation": "Official regulation (PDF from the issuing authority / official portal)",
             "abstract_only": "Abstract-only record (no legal full text found)",
             "inaccessible": "Inaccessible (paywall / login / no open copy found)",
             "unknown": "Not identified",

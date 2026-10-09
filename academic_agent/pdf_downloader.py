@@ -120,13 +120,14 @@ class PdfDownloader:
         sha, size, first = hashlib.sha256(), 0, True
         try:
             with os.fdopen(fd, "wb") as out:
-                for chunk in resp.iter_content(chunk_size=65536):
+                chunks = iter(resp.iter_content(chunk_size=65536))
+                for chunk in chunks:
                     if not chunk:
                         continue
                     if first:
                         first = False
                         if not looks_like_pdf(chunk[:1024]):
-                            probe = self.checker.classify_response(url, _Replay(resp, chunk))
+                            probe = self.checker.classify_response(url, _Replay(resp, chunk, chunks))
                             status = probe.status if probe.status != ProbeStatus.PDF else ProbeStatus.NOT_PDF
                             if status == ProbeStatus.HTML_PAGE:
                                 status = ProbeStatus.NOT_PDF
@@ -174,11 +175,11 @@ class PdfDownloader:
         if result.path:
             self._rm(result.path)
 
-    def finalize(self, result: DownloadResult, paper: Paper, version: VersionType) -> Path:
+    def finalize(self, result: DownloadResult, paper: Paper, version: VersionType, filename: Optional[str] = None) -> Path:
         """Move the validated temp file to ``Downloaded_Papers/<year>_<Author>_<Title>.pdf``."""
         assert result.path is not None
         self.settings.download_dir.mkdir(parents=True, exist_ok=True)
-        name = make_filename(paper, version)
+        name = filename or make_filename(paper, version)
         target = self.settings.download_dir / name
         n = 2
         while target.exists():
@@ -207,13 +208,13 @@ class _Reject(Exception):
 class _Replay:
     """Wraps a response whose first chunk was already consumed so the access checker can classify it."""
 
-    def __init__(self, resp, first_chunk: bytes):
-        self._resp, self._first = resp, first_chunk
+    def __init__(self, resp, first_chunk: bytes, chunks):
+        self._resp, self._first, self._chunks = resp, first_chunk, chunks
         self.headers, self.url, self.status_code = resp.headers, resp.url, resp.status_code
 
     def iter_content(self, chunk_size=8192):
         yield self._first
-        yield from self._resp.iter_content(chunk_size=chunk_size)
+        yield from self._chunks
 
     def close(self):
         self._resp.close()

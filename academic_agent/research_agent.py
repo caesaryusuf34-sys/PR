@@ -33,6 +33,9 @@ from paper_match import (MatchResult, QueryInfo, author_overlap, classify_host, 
                          topic_relevance)
 from pdf_downloader import PdfDownloader
 from pdf_verifier import PdfVerifier, Verdict
+from regulation_finder import RegSearch, RegulationFinder
+from regulation_match import RegRef
+from batch import split_queries
 from search_providers import (ProviderError, ProviderRegistry, SearchProvider, WebHit, WebSearchProvider, guess_kind)
 from web_crawler import WebCrawler
 
@@ -128,6 +131,8 @@ class ResearchAgent:
         self.downloader = downloader or PdfDownloader(self.http, self.checker, self.settings)
         self.verifier = verifier or PdfVerifier(self.settings.pdf_text_pages, self.settings.pdf_timeout_seconds,
                                                 self.settings.min_pdf_bytes)
+        self.regulations = RegulationFinder(self.http, self.checker, self.downloader, self.verifier, self.settings, self.db,
+                                            web_providers=self.registry.available_web)
 
     # ======================================================================================
     # public API
@@ -160,6 +165,22 @@ class ResearchAgent:
             log.error("could not persist run: %s", traceback.format_exc())
         return result
 
+    def run_batch(self, queries, progress: Optional[Callable[[ProgressEvent], None]] = None, *, refresh: bool = False) -> list[ResearchResult]:
+        """Research several papers and/or regulations in one call (sequentially, each with its own budget).
+
+        ``queries`` is a list of strings or one multi-line string (one item per line).
+        """
+        items = split_queries(queries, self.settings.max_batch) if isinstance(queries, str) else list(queries)[: self.settings.max_batch]
+        results: list[ResearchResult] = []
+        for i, q in enumerate(items, 1):
+            def wrapped(ev: ProgressEvent, i=i) -> None:
+                if progress:
+                    progress(ProgressEvent(ev.stage, f"[{i}/{len(items)}] {ev.message}", ev.url, ev.level))
+            if progress:
+                progress(ProgressEvent("batch", f"[{i}/{len(items)}] Starting: {q[:120]}"))
+            results.append(self.run(q, progress=wrapped, refresh=refresh))
+        return results
+
     # ======================================================================================
     # workflow
     # ======================================================================================
@@ -168,6 +189,8 @@ class ResearchAgent:
         self._emit(ctx, "understand", f"Query understood as: {qi.type.value}"
                    + (f" - DOI {qi.doi}" if qi.doi else f" - arXiv:{qi.arxiv_id}" if qi.arxiv_id else
                       f" - \"{qi.title}\"" + (f" ({qi.author.title()}, {qi.year})" if qi.author else "")))
+        if qi.type == QueryType.REGULATION:
+            return self._run_regulation(ctx)
         # ---- step 2: identify ----------------------------------------------------------
         outcome = self._identify(ctx)
         if outcome is not None:
@@ -206,6 +229,71 @@ class ResearchAgent:
         if info is None:
             return Outcome.NO_FULLTEXT
         return Outcome.DOWNLOADED if info.saved else Outcome.LINK_FOUND
+
+    # ---------------------------------------------------------------------------------------
+    # regulations (SEOJK, POJK, UU, PP ...)
+    # ---------------------------------------------------------------------------------------
+    def _run_regulation(self, ctx: _Ctx) -> ResearchResult:
+        ref = ctx.qi.regulation
+        assert ref is not None
+        res = self.regulations.find(ref, lambda stage, msg, url="", level="info": self._emit(ctx, stage, msg, url, level), ctx.qi.raw)
+        ctx.paper, ctx.used, ctx.notes = res.paper, res.used, res.notes
+        ctx.attempts.extend(res.attempts)
+        ctx.restricted_seen = res.restricted_seen
+        ctx.examined = len(res.attempts)
+        return self._finish_regulation(ctx, res, ref)
+
+    def _finish_regulation(self, ctx: _Ctx, res: RegSearch, ref: RegRef) -> ResearchResult:
+        info = res.info
+        if info:
+            state = AccessState.OFFICIAL_REGULATION
+        elif res.candidates:
+            state = AccessState.INACCESSIBLE
+        else:
+            state = AccessState.UNKNOWN
+        official = (info.landing_url if info else "") or (res.candidates[0].page_url if res.candidates else "") or \
+            (res.manual_links[0][1] if res.manual_links else "")
+        r = ResearchResult(query=ctx.qi.raw, query_type=ctx.qi.type, outcome=res.outcome, access_state=state, paper=res.paper,
+                           download=info, official_link=official, attempts=ctx.attempts, events=ctx.events, providers_used=ctx.used,
+                           other_versions=res.related, match_note=f"Regulation reference parsed as {ref.canonical}.",
+                           requests_used=self.http.budget.used, elapsed_seconds=self.http.budget.elapsed)
+        cites: list[Citation] = []
+
+        def cite(title: str, url: str, note: str = "") -> int:
+            for c in cites:
+                if c.url == url:
+                    return c.label
+            cites.append(Citation(len(cites) + 1, title, url, note))
+            return len(cites)
+
+        parts = [f"**Regulation.** {md_escape(ref.canonical)} — issuer: {md_escape(ref.issuer)}."
+                 + (f" Title: *{md_escape(res.paper.title)}*." if res.paper else "")]
+        sources = ", ".join(res.used) or "none"
+        failed = [f"{n} ({why})" for n, why in res.notes.items() if not why.startswith("ok")]
+        parts.append(f"**Sources checked.** {sources}." + (f" Not used / failed: {'; '.join(failed)}." if failed else "")
+                     + f" {len(res.attempts)} PDF candidate(s) examined; {r.requests_used} HTTP requests in {r.elapsed_seconds:.0f}s.")
+        if info:
+            n = cite("Official PDF", info.source_url, "verified PDF of the regulation")
+            if info.landing_url:
+                cite("Official regulation page", info.landing_url, "issuing authority")
+            v = info.verification or {}
+            parts.append(f"**Result.** Found the official PDF [{n}] on {urlsplit(info.source_url).hostname}. It was opened and checked: "
+                         f"{'; '.join(v.get('reasons', [])) or 'ok'}."
+                         + (f" Saved to `{info.path}`." if info.saved else " Nothing was saved to disk (auto-download is off)."))
+        elif res.outcome == Outcome.NO_FULLTEXT:
+            link = cite("Official regulation page", res.candidates[0].page_url) if res.candidates else 0
+            parts.append("**Result.** The regulation's official page was found" + (f" [{link}]" if link else "")
+                         + ", but no PDF could be verified as this regulation. See the attempts below.")
+        else:
+            parts.append("**Result.** The regulation was not found in the sources that could be searched automatically. "
+                         "Try these official search pages manually (they are search pages, not verified PDFs):")
+            for label, url in res.manual_links:
+                cite(label, url, "manual search page - not a verified PDF")
+        if not info and res.outcome == Outcome.NO_FULLTEXT:
+            for label, url in res.manual_links[:2]:
+                cite(label, url, "manual search page - not a verified PDF")
+        r.summary, r.citations = "\n\n".join(parts), cites
+        return r
 
     # ---------------------------------------------------------------------------------------
     # identification

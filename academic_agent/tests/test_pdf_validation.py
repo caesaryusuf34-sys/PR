@@ -249,3 +249,11 @@ class TestDownloader:
         first = d.finalize(d.download("https://r.example/p.pdf"), PAPER, VersionType.PUBLISHED)
         second = d.finalize(d.download("https://r.example/p.pdf"), PAPER, VersionType.PUBLISHED)
         assert first == second and len(list(settings.download_dir.glob("*.pdf"))) == 1
+
+
+def test_long_html_pages_are_read_completely_not_just_the_first_8kb(settings):
+    """Regression: links located after the first 8 KB of a page must reach the crawler."""
+    html = "<html><head><title>Record</title></head><body>" + "<p>filler</p>" * 2000 + "<a href='/files/x.pdf'>Download PDF</a></body></html>"
+    web = FakeWeb().add("https://r.example/record", html)
+    probe = AccessChecker(make_client(settings, web)).probe("https://r.example/record")
+    assert probe.status == ProbeStatus.HTML_PAGE and "/files/x.pdf" in probe.html and len(probe.html) == len(html)

@@ -195,7 +195,7 @@ class HttpClient:
                 pass
         return min(0.8 * (2 ** attempt) + random.uniform(0, 0.4), 8.0)
 
-    def _send(self, method, url, *, params, headers, timeout, stream, retries):
+    def _send(self, method, url, *, params, headers, timeout, stream, retries, data=None):
         host = urlsplit(url).hostname or ""
         last_exc: Optional[Exception] = None
         for attempt in range(retries + 1):
@@ -203,7 +203,7 @@ class HttpClient:
             self.budget.consume()
             try:
                 resp = self.session.request(method, url, params=params, headers=headers, timeout=timeout,
-                                            stream=stream, allow_redirects=False)
+                                            stream=stream, allow_redirects=False, data=data)
             except UnsafeURL:
                 raise
             except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
@@ -228,25 +228,26 @@ class HttpClient:
     # ---- public API ---------------------------------------------------------------------
     def request(self, method: str, url: str, *, params: Optional[dict] = None, headers: Optional[dict] = None,
                 timeout: Optional[tuple] = None, stream: bool = False, check_robots: bool = False,
-                retries: Optional[int] = None, max_redirects: Optional[int] = None) -> requests.Response:
+                retries: Optional[int] = None, max_redirects: Optional[int] = None,
+                data: Optional[dict] = None) -> requests.Response:
         """Perform a request, following redirects manually so each hop is validated."""
         timeout = timeout or (self.settings.connect_timeout, self.settings.read_timeout)
         retries = self.settings.max_retries if retries is None else retries
         max_redirects = self.settings.max_redirects if max_redirects is None else max_redirects
-        current, hop_params, hop_method = url, params, method
+        current, hop_params, hop_method, hop_data = url, params, method, data
         for _ in range(max_redirects + 1):
             self._validate(current)
             if check_robots and self.settings.respect_robots and not self.robots_allowed(current):
                 raise RobotsDisallowed(f"robots.txt disallows fetching {current}")
             resp = self._send(hop_method, current, params=hop_params, headers=headers, timeout=timeout,
-                              stream=stream, retries=retries)
+                              stream=stream, retries=retries, data=hop_data)
             loc = resp.headers.get("Location")
             if resp.status_code in REDIRECT_CODES and loc:
                 resp.close()
                 current = urljoin(current, loc)
                 hop_params = None
-                if resp.status_code == 303:
-                    hop_method = "GET"
+                if resp.status_code == 303 or (resp.status_code in (301, 302) and hop_method == "POST"):
+                    hop_method, hop_data = "GET", None
                 continue
             resp.url = current          # final URL after our own redirect handling
             return resp

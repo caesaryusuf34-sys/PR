@@ -13,7 +13,8 @@ import streamlit as st
 from config import Settings
 from database import Database
 from http_client import HttpClient
-from models import AccessState, FullTextLocation, Outcome, Paper, ProgressEvent, VersionType
+from batch import batch_markdown, batch_rows, rows_to_csv, split_queries
+from models import AccessState, FullTextLocation, Outcome, Paper, ProgressEvent, QueryType, VersionType
 from paper_match import confirmations, md_escape
 from research_agent import ResearchAgent
 from search_providers import ProviderRegistry
@@ -25,6 +26,7 @@ STAGE_PROGRESS = {"understand": 0.05, "providers": 0.15, "identify": 0.3, "verif
 LEVEL_ICON = {"info": "▫️", "success": "✅", "warning": "⚠️", "error": "❌"}
 STATE_STYLE = {
     AccessState.PUBLISHED: ("green", "Final published article"),
+    AccessState.OFFICIAL_REGULATION: ("green", "Official regulation (issuing authority)"),
     AccessState.ACCEPTED: ("blue", "Accepted manuscript"),
     AccessState.PREPRINT: ("orange", "Preprint (not the final article)"),
     AccessState.FULLTEXT_UNKNOWN_VERSION: ("violet", "Full text - version not stated"),
@@ -58,9 +60,9 @@ def session_settings() -> Settings:
         accept_partial_verification=bool(ss.get("accept_partial", s.accept_partial_verification)))
 
 
-def set_query(q: str) -> None:
-    st.session_state["query_text"] = q
-    st.session_state["auto_run"] = True
+def set_pick(idx: int, q: str) -> None:
+    """Re-run just one item of the list with a more specific query (the other results stay)."""
+    st.session_state["pending_pick"] = (idx, q)
 
 
 def paper_query(p: Paper) -> str:
@@ -101,25 +103,36 @@ def sidebar() -> None:
 
 
 # ----------------------------------------------------------------------------- research run
-def run_research(query: str) -> None:
-    settings = session_settings()
-    agent = ResearchAgent(settings, db=get_db())
+OUTCOME_LABEL = {Outcome.DOWNLOADED: "PDF saved and verified", Outcome.LINK_FOUND: "Verified PDF link found",
+                 Outcome.NEEDS_CHOICE: "Please choose the intended paper", Outcome.NO_FULLTEXT: "Identified - no legal PDF found",
+                 Outcome.NOT_FOUND: "Not found"}
+
+
+def run_queries(queries: list[str]) -> list:
+    """Run one or many queries sequentially with live progress; returns the results in input order."""
+    agent = ResearchAgent(session_settings(), db=get_db())
+    n = len(queries)
     bar = st.progress(0.0, text="Starting…")
-    status = st.status("Researching…", expanded=True)
-
-    def on_event(ev: ProgressEvent) -> None:
-        bar.progress(STAGE_PROGRESS.get(ev.stage, 0.5), text=f"{ev.stage}: {ev.message[:90]}")
+    status = st.status(f"Researching {n} item(s)…", expanded=True)
+    results = []
+    for i, q in enumerate(queries):
         with status:
-            st.markdown(f"{LEVEL_ICON.get(ev.level, '▫️')} **{ev.stage}** - {md_escape(ev.message)}")
+            st.markdown(f"**[{i + 1}/{n}] {md_escape(q[:140])}**")
 
-    result = agent.run(query, progress=on_event, refresh=bool(st.session_state.get("refresh", False)))
+        def on_event(ev: ProgressEvent, i=i) -> None:
+            frac = (i + STAGE_PROGRESS.get(ev.stage, 0.5)) / n
+            bar.progress(min(frac, 0.99), text=f"[{i + 1}/{n}] {ev.stage}: {ev.message[:80]}")
+            with status:
+                st.markdown(f"{LEVEL_ICON.get(ev.level, '▫️')} `{ev.stage}` {md_escape(ev.message)}")
+
+        r = agent.run(q, progress=on_event, refresh=bool(st.session_state.get("refresh", False)))
+        results.append(r)
+        with status:
+            st.markdown(f"➡️ **{OUTCOME_LABEL[r.outcome]}**")
     bar.progress(1.0, text="Finished")
-    label = {Outcome.DOWNLOADED: "Paper retrieved and verified", Outcome.LINK_FOUND: "Verified PDF link found", Outcome.NEEDS_CHOICE: "Please choose the intended paper",
-             Outcome.NO_FULLTEXT: "Publication identified - no legal full text found",
-             Outcome.NOT_FOUND: "No matching publication found"}[result.outcome]
-    status.update(label=label, state="complete" if result.outcome in (Outcome.DOWNLOADED, Outcome.LINK_FOUND) else "error"
-                  if result.outcome == Outcome.NOT_FOUND else "complete", expanded=False)
-    st.session_state["result"] = result
+    ok = sum(1 for r in results if r.outcome in (Outcome.DOWNLOADED, Outcome.LINK_FOUND))
+    status.update(label=f"Finished: {ok}/{n} PDF link(s) verified", state="complete", expanded=False)
+    return results
 
 
 # ----------------------------------------------------------------------------- rendering
@@ -148,6 +161,29 @@ def render_metadata(p: Paper) -> None:
         with st.expander("Source-by-source bibliographic comparison"):
             st.dataframe([{"source": s["provider"], "title": s["title"], "year": s["year"], "doi": s["doi"],
                            "first authors": ", ".join(s["authors"][:3])} for s in p.provenance], width="stretch")
+
+
+def render_regulation(result) -> None:
+    p = result.paper
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Regulation")
+        st.markdown(f"**{md_escape(p.title)}**")
+        st.write(f"**Issuer:** {md_escape(p.authors[0] if p.authors else 'n/a')}  •  **Year:** {p.year or 'n/a'}  •  **Type:** {md_escape(p.venue)}")
+        if p.url:
+            st.markdown(f"**Official page:** [{md_escape(p.url[:90])}]({p.url})")
+    with right:
+        if result.download and not result.download.saved:
+            render_link(result)
+        elif result.download:
+            render_download(result)
+        else:
+            st.subheader("Access")
+            st.info("No verified PDF. Nothing here is a guessed address; use the manual search pages listed under Sources.")
+    if result.other_versions:
+        with st.expander(f"Companion documents on the official page ({len(result.other_versions)})"):
+            st.dataframe([{"document": l.note.replace("companion document: ", ""), "link": l.url} for l in result.other_versions],
+                          width="stretch", column_config={"link": st.column_config.LinkColumn("link")})
 
 
 def render_link(result) -> None:
@@ -218,7 +254,7 @@ def render_other_versions(result) -> None:
         st.dataframe(rows, width="stretch", column_config={"link": st.column_config.LinkColumn("link")})
 
 
-def render_choices(result) -> None:
+def render_choices(result, idx: int = 0) -> None:
     st.subheader("Which paper do you mean?")
     for i, p in enumerate(result.alternatives):
         with st.container(border=True):
@@ -228,10 +264,10 @@ def render_choices(result) -> None:
                         f"{md_escape(p.venue or p.work_type or '')} • {known_oa} • sources: {', '.join(p.sources)} • score {p.score:.2f}")
             if p.doi:
                 c1.markdown(f"[{md_escape(p.doi)}]({p.doi_url})")
-            c2.button("Retrieve this", key=f"pick_{i}", on_click=set_query, args=(paper_query(p),))
+            c2.button("Retrieve this", key=f"pick_{idx}_{i}", on_click=set_pick, args=(idx, paper_query(p)))
 
 
-def render_result(result) -> None:
+def render_result(result, idx: int = 0) -> None:
     color, label = STATE_STYLE[result.access_state]
     if result.outcome == Outcome.LINK_FOUND:
         st.success("Verified PDF link found (nothing was saved to disk).")
@@ -251,8 +287,10 @@ def render_result(result) -> None:
         for c in result.citations:
             st.markdown(f"[{c.label}] [{md_escape(c.title)}]({c.url})" + (f" - {md_escape(c.note)}" if c.note else ""))
     if result.outcome == Outcome.NEEDS_CHOICE or (result.outcome == Outcome.NOT_FOUND and result.alternatives):
-        render_choices(result)
-    if result.paper:
+        render_choices(result, idx)
+    if result.paper and result.query_type == QueryType.REGULATION:
+        render_regulation(result)
+    elif result.paper:
         left, right = st.columns(2)
         with left:
             render_metadata(result.paper)
@@ -271,6 +309,25 @@ def render_result(result) -> None:
     st.caption(f"{result.requests_used} HTTP requests • {result.elapsed_seconds:.0f}s")
 
 
+def render_results(results: list) -> None:
+    if len(results) == 1:
+        render_result(results[0], 0)
+        return
+    st.markdown("### Results")
+    rows = batch_rows(results)
+    ok = sum(1 for r in results if r.outcome in (Outcome.DOWNLOADED, Outcome.LINK_FOUND))
+    st.write(f"**{ok} of {len(results)}** items have a verified PDF link.")
+    st.dataframe(rows, width="stretch", hide_index=True,
+                 column_config={"pdf_link": st.column_config.LinkColumn("PDF link"), "article_page": st.column_config.LinkColumn("Article / official page")})
+    with st.expander("Copy-friendly list of all links"):
+        st.code(batch_markdown(results), language=None)
+    st.download_button("Download table (CSV)", data=rows_to_csv(rows).encode("utf-8-sig"), file_name="research_results.csv", mime="text/csv")
+    st.markdown("### Details")
+    pick = st.selectbox("Show details for", range(len(results)), key="detail_pick",
+                        format_func=lambda i: f"{i + 1}. {OUTCOME_LABEL[results[i].outcome]} - {(results[i].paper.title if results[i].paper else results[i].query)[:90]}")
+    render_result(results[pick], pick)
+
+
 def render_history() -> None:
     st.subheader("Previously retrieved papers")
     q = st.text_input("Search history (title, author, DOI, venue, query)", key="history_search")
@@ -279,7 +336,7 @@ def render_history() -> None:
         st.info("No research runs recorded yet.")
         return
     table = [{"date": r["started_at"], "query": r["query"], "title": r["title"] or "", "year": r["year"],
-              "result": r["outcome"], "version": r["version_type"] or "", "file": Path(r["file_path"]).name if r["file_path"] else ""}
+              "result": r["outcome"], "version": r["version_type"] or "", "pdf link": r["source_url"] or "", "file": Path(r["file_path"]).name if r["file_path"] else ""}
              for r in rows]
     st.dataframe(table, width="stretch")
     with_files = [r for r in rows if r["file_path"] and Path(r["file_path"]).is_file()]
@@ -316,20 +373,25 @@ access, downloads the PDF, and verifies that its content is the requested paper 
 def main() -> None:
     sidebar()
     st.title("🎓 Academic Research Agent")
-    st.caption("Finds, verifies and downloads academic papers - only from legal, open sources.")
+    st.caption("Finds and verifies PDF links for academic papers and Indonesian regulations - only from legal, open sources.")
     tab_research, tab_history, tab_help = st.tabs(["Research", "History", "Setup & help"])
     with tab_research:
-        st.text_input("Paper title, DOI, arXiv id, or research question", key="query_text",
-                      placeholder="The Impact of Interest Rates on Peer-to-Peer Lending Default Risk")
-        go = st.button("Research & Download", type="primary")
-        auto = st.session_state.pop("auto_run", False)
-        query = st.session_state.get("query_text", "").strip()
-        if (go or auto) and query:
-            run_research(query)
+        st.text_area("One item per line: paper title, APA citation, DOI, arXiv id, research question, or regulation (e.g. SEOJK No. 19/SEOJK.06/2025)",
+                     key="query_text", height=140,
+                     placeholder="The Impact of Interest Rates on Peer-to-Peer Lending Default Risk\nSEOJK No. 19/SEOJK.06/2025\n10.1371/journal.pone.0000308")
+        go = st.button("Research", type="primary")
+        queries = split_queries(st.session_state.get("query_text", ""), base_settings().max_batch)
+        pick = st.session_state.pop("pending_pick", None)
+        if pick and st.session_state.get("results"):
+            idx, q = pick
+            new = run_queries([q])[0]
+            st.session_state["results"][idx] = new
+        elif go and queries:
+            st.session_state["results"] = run_queries(queries)
         elif go:
-            st.warning("Enter a title, DOI or question first.")
-        if st.session_state.get("result") is not None:
-            render_result(st.session_state["result"])
+            st.warning("Enter at least one title, DOI or regulation first.")
+        if st.session_state.get("results"):
+            render_results(st.session_state["results"])
     with tab_history:
         render_history()
     with tab_help:

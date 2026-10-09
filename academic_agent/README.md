@@ -1,7 +1,7 @@
 # Academic Research Agent
 
 An autonomous research agent that **finds, verifies and downloads academic papers - only from legal, open sources.**
-Give it a paper title, a DOI, an arXiv id, "Smith 2020 …", or a research question. It will:
+Give it a paper title, an APA citation, a DOI, an arXiv id, a research question, **or an Indonesian regulation (e.g. `SEOJK No. 19/SEOJK.06/2025`)** - one item, or **many at once (one per line)**. It will:
 
 1. work out what kind of query it is and pick the right scholarly sources,
 2. identify the publication and **cross-check** its metadata across several databases,
@@ -27,6 +27,23 @@ It never invents a PDF address, never claims success without a validated file, a
   Europe PMC DOAJ     query parsing    depth/page       classification    save              hints, safety      runs
   arXiv OpenAIRE      filenames        budgets
   Brave / Google CSE        └──────────────── http_client.py + net_safety.py: SSRF guard, rate limits, retries, robots.txt, budgets ───┘
+```
+
+### Regulations (SEOJK, POJK, PADK, UU, PP, PMK, PBI, SEBI …)
+Type the reference as you normally would: `SEOJK No. 19/SEOJK.06/2025`, `POJK Nomor 40 Tahun 2024`, `UU No. 27 Tahun 2022`, `23/6/PBI/2021`.
+The agent searches the **OJK regulation database** (its public search form) and, if you configured a web-search key, official `.go.id` pages and PDFs.
+A PDF link is returned only if the regulation's identification line (e.g. "Nomor 19/SEOJK.06/2025") is printed in the PDF text; a scanned PDF
+without text is accepted only when the official page for exactly that regulation links to it, and that is stated in the result. Companion documents
+on the same page (Abstrak, FAQ, Lampiran) are listed separately, never mistaken for the regulation. If nothing is found you get official *search pages*
+(OJK, JDIH BPK, JDIH BI) clearly marked as search pages, not PDFs. Portals that block automated clients (e.g. peraturan.bpk.go.id, behind Cloudflare)
+are reported and skipped, not bypassed. Bank Indonesia's JDIH is a JavaScript application and is not searched automatically.
+
+### Many items at once
+Paste several lines (titles, APA citations, DOIs, regulations - mixed is fine; numbering/bullets are stripped, duplicates dropped, max 25 by default,
+`max_batch`). Items run one after another with live progress. You get a table with the PDF link for each, a copy-friendly list, a CSV download,
+and a details view per item. Ambiguous titles stay in the list with a "Retrieve this" choice that re-runs only that line.
+```python
+results = ResearchAgent().run_batch("Title one\nSEOJK No. 19/SEOJK.06/2025\n10.1371/journal.pone.0000308")
 ```
 
 ---
@@ -73,7 +90,7 @@ macOS / Linux: identical, except `python3 -m venv .venv && source .venv/bin/acti
 
 ### Run the tests
 ```powershell
-python -m pytest                       # 167 offline tests, no internet needed, ~2 seconds
+python -m pytest                       # 190+ offline tests, no internet needed, ~2 seconds
 $env:RUN_LIVE_TESTS = "1"; python -m pytest tests/test_live_smoke.py     # optional real-internet checks
 ```
 
@@ -166,10 +183,12 @@ The version is taken from the source's metadata and corrected when the document 
 | `access_checker.py` | Real-response classification: PDF / HTML / login / paywall / CAPTCHA / robots / errors. |
 | `pdf_downloader.py` | Streaming, size-limited, retrying download into a temp file; atomic move to `Downloaded_Papers`. |
 | `pdf_verifier.py` | Structure checks, text extraction, title/author/DOI/abstract verification, version hints, active-content flags. |
+| `regulation_match.py`, `regulation_finder.py` | Regulation reference parsing, OJK database search, official-PDF verification. |
+| `batch.py` | Multi-line input parsing, result table / list / CSV. |
 | `database.py` | SQLite: papers, downloads (SHA-256), attempts, runs, searchable history. |
 | `http_client.py`, `net_safety.py` | Hardened HTTP layer and URL validation. |
 | `config.py`, `models.py` | Settings (env/.env) and shared data classes. |
-| `tests/` | 167 offline tests (fake web, generated PDFs) + optional live smoke tests. |
+| `tests/` | 190+ offline tests (fake web, generated PDFs) + optional live smoke tests. |
 
 ### Adding a source
 Subclass `SearchProvider` (or `WebSearchProvider`) in `search_providers.py`, implement whichever of `search`, `lookup_doi`, `find_fulltext`
