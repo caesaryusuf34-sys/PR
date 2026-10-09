@@ -1,0 +1,11 @@
+# Runtime
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+pypdf>=4.0
+fonttools>=4.40        # lets pypdf decode some embedded CFF fonts (better text extraction for title/author checks)
+defusedxml>=0.7.1      # safe parsing of untrusted XML (arXiv API)
+streamlit>=1.50
+
+# Tests
+pytest>=8.0

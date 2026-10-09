@@ -1,0 +1,320 @@
+"""Streamlit front end for the Academic Research Agent.
+
+The UI contains no research logic: it calls ``ResearchAgent.run`` and renders the returned
+``ResearchResult`` (also available as ``result.to_dict()`` for a future API / JS front end).
+Run with:  streamlit run app.py
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import streamlit as st
+
+from config import Settings
+from database import Database
+from http_client import HttpClient
+from models import AccessState, FullTextLocation, Outcome, Paper, ProgressEvent, VersionType
+from paper_match import confirmations, md_escape
+from research_agent import ResearchAgent
+from search_providers import ProviderRegistry
+
+st.set_page_config(page_title="Academic Research Agent", page_icon="🎓", layout="wide")
+
+STAGE_PROGRESS = {"understand": 0.05, "providers": 0.15, "identify": 0.3, "verify-metadata": 0.4, "discover": 0.5,
+                  "crawl": 0.6, "probe": 0.65, "download": 0.8, "verify-pdf": 0.92, "decide": 0.97, "error": 1.0}
+LEVEL_ICON = {"info": "▫️", "success": "✅", "warning": "⚠️", "error": "❌"}
+STATE_STYLE = {
+    AccessState.PUBLISHED: ("green", "Final published article"),
+    AccessState.ACCEPTED: ("blue", "Accepted manuscript"),
+    AccessState.PREPRINT: ("orange", "Preprint (not the final article)"),
+    AccessState.FULLTEXT_UNKNOWN_VERSION: ("violet", "Full text - version not stated"),
+    AccessState.ABSTRACT_ONLY: ("gray", "Abstract-only record"),
+    AccessState.INACCESSIBLE: ("red", "Inaccessible publication"),
+    AccessState.UNKNOWN: ("gray", "Not identified"),
+}
+
+
+# ----------------------------------------------------------------------------- services
+@st.cache_resource
+def get_db() -> Database:
+    return Database(Settings.from_env().db_path)
+
+
+def base_settings() -> Settings:
+    return Settings.from_env()
+
+
+def session_settings() -> Settings:
+    """Environment settings overlaid with the sidebar choices."""
+    s = base_settings()
+    ss = st.session_state
+    return s.replace(
+        contact_email=ss.get("contact_email", s.contact_email).strip(),
+        max_pages=int(ss.get("max_pages", s.max_pages)), max_depth=int(ss.get("max_depth", s.max_depth)),
+        max_candidates=int(ss.get("max_candidates", s.max_candidates)),
+        time_limit_seconds=float(ss.get("time_limit", s.time_limit_seconds)),
+        allow_preprints=bool(ss.get("allow_preprints", s.allow_preprints)),
+        accept_partial_verification=bool(ss.get("accept_partial", s.accept_partial_verification)))
+
+
+def set_query(q: str) -> None:
+    st.session_state["query_text"] = q
+    st.session_state["auto_run"] = True
+
+
+def paper_query(p: Paper) -> str:
+    """Most specific query that re-identifies exactly this paper (DOI > arXiv id > surname + year + title)."""
+    if p.doi:
+        return p.doi
+    if p.arxiv_id:
+        return f"arXiv:{p.arxiv_id}"
+    if p.authors and p.year:
+        return f"{p.first_author_surname.title()} {p.year} {p.title}"
+    return p.title
+
+
+# ----------------------------------------------------------------------------- sidebar
+def sidebar() -> None:
+    s = base_settings()
+    with st.sidebar:
+        st.header("Settings")
+        st.text_input("Contact e-mail (needed by Unpaywall; used for polite API access)", key="contact_email",
+                      value=s.contact_email, placeholder="you@university.edu")
+        st.subheader("Search budget")
+        st.slider("Max pages to visit", 1, 30, s.max_pages, key="max_pages")
+        st.slider("Max link depth", 0, 3, s.max_depth, key="max_depth")
+        st.slider("Max candidate locations", 4, 40, s.max_candidates, key="max_candidates")
+        st.slider("Time limit (seconds)", 30, 600, int(s.time_limit_seconds), step=10, key="time_limit")
+        st.subheader("Decisions")
+        st.checkbox("Allow preprints when nothing better exists", s.allow_preprints, key="allow_preprints")
+        st.checkbox("Accept 'partially verified' matches (title differs between versions)", s.accept_partial_verification,
+                    key="accept_partial")
+        st.checkbox("Re-download even if the paper is already in my library", False, key="refresh")
+        st.caption("robots.txt, paywalls, logins and CAPTCHAs are always respected - never bypassed.")
+        st.subheader("Sources")
+        reg = ProviderRegistry.default(HttpClient(session_settings()), session_settings())
+        for row in reg.status():
+            st.markdown(f"{'🟢' if row['available'] else '⚪'} **{row['label']}**" + ("" if row["available"] else f" - {row['note']}"))
+        st.caption(f"Downloads: `{s.download_dir}`")
+
+
+# ----------------------------------------------------------------------------- research run
+def run_research(query: str) -> None:
+    settings = session_settings()
+    agent = ResearchAgent(settings, db=get_db())
+    bar = st.progress(0.0, text="Starting…")
+    status = st.status("Researching…", expanded=True)
+
+    def on_event(ev: ProgressEvent) -> None:
+        bar.progress(STAGE_PROGRESS.get(ev.stage, 0.5), text=f"{ev.stage}: {ev.message[:90]}")
+        with status:
+            st.markdown(f"{LEVEL_ICON.get(ev.level, '▫️')} **{ev.stage}** - {md_escape(ev.message)}")
+
+    result = agent.run(query, progress=on_event, refresh=bool(st.session_state.get("refresh", False)))
+    bar.progress(1.0, text="Finished")
+    label = {Outcome.DOWNLOADED: "Paper retrieved and verified", Outcome.NEEDS_CHOICE: "Please choose the intended paper",
+             Outcome.NO_FULLTEXT: "Publication identified - no legal full text found",
+             Outcome.NOT_FOUND: "No matching publication found"}[result.outcome]
+    status.update(label=label, state="complete" if result.outcome == Outcome.DOWNLOADED else "error"
+                  if result.outcome == Outcome.NOT_FOUND else "complete", expanded=False)
+    st.session_state["result"] = result
+
+
+# ----------------------------------------------------------------------------- rendering
+def render_metadata(p: Paper) -> None:
+    st.subheader("Publication metadata")
+    st.markdown(f"**{md_escape(p.title)}**")
+    st.write(md_escape(", ".join(p.authors[:12]) + (" et al." if len(p.authors) > 12 else "")) or "Authors not listed")
+    cols = st.columns(3)
+    cols[0].metric("Year", p.year or "n.d.")
+    cols[1].metric("Citations", p.citation_count if p.citation_count is not None else "n/a")
+    cols[2].metric("Type", (p.work_type or "n/a")[:22])
+    if p.venue:
+        st.write(f"**Venue:** {md_escape(p.venue)}")
+    if p.doi:
+        st.markdown(f"**DOI:** [{md_escape(p.doi)}]({p.doi_url})")
+    if p.arxiv_id:
+        st.markdown(f"**arXiv:** [{md_escape(p.arxiv_id)}](https://arxiv.org/abs/{p.arxiv_id})")
+    if p.related_dois:
+        st.write("**Related versions (DOIs):** " + ", ".join(md_escape(d) for d in p.related_dois))
+    c = confirmations(p)
+    st.caption(f"Cross-checked across {len(c['providers'])} source(s): {', '.join(c['providers'])}")
+    if p.abstract:
+        with st.expander("Abstract"):
+            st.write(md_escape(p.abstract))
+    if len(p.provenance) > 1:
+        with st.expander("Source-by-source bibliographic comparison"):
+            st.dataframe([{"source": s["provider"], "title": s["title"], "year": s["year"], "doi": s["doi"],
+                           "first authors": ", ".join(s["authors"][:3])} for s in p.provenance], width="stretch")
+
+
+def render_download(result) -> None:
+    d = result.download
+    st.subheader("Download")
+    path = Path(d.path)
+    st.success(("Already in your library: " if d.already_had else "Saved: ") + path.name)
+    st.code(str(path), language=None)
+    st.write(f"**Version:** {d.version.label}  •  **Size:** {d.size_bytes / 1024:.0f} KB  •  **Retrieved:** {d.access_date or 'n/a'}")
+    st.markdown(f"**Source:** [{md_escape(d.source_url[:90])}]({d.source_url})")
+    st.caption(f"SHA-256 `{d.sha256}`")
+    if path.is_file():
+        st.download_button("Save a copy of the PDF", data=path.read_bytes(), file_name=path.name, mime="application/pdf")
+    if d.version in (VersionType.PREPRINT, VersionType.ACCEPTED):
+        st.warning("This is not the final published article. Check the published version before citing page numbers or results.")
+
+
+def render_evidence(result) -> None:
+    with st.expander("Evidence behind the decision", expanded=False):
+        if result.download:
+            v = result.download.verification
+            st.markdown("**PDF verification**")
+            st.write({"verdict": v.get("verdict"), "title match": v.get("title_score"), "authors found": v.get("authors_score"),
+                      "abstract overlap": v.get("abstract_score"), "DOI printed in document": v.get("doi_found"),
+                      "pages": v.get("page_count"), "reasons": v.get("reasons"), "warnings": v.get("warnings"),
+                      "version hints in text": v.get("version_evidence")})
+            if v.get("excerpt"):
+                st.caption("First text of the document (untrusted content, shown as plain text):")
+                st.text(v["excerpt"])
+        if result.attempts:
+            st.markdown("**Every location examined**")
+            st.dataframe([{"result": a.status, "stage": a.stage, "provider": a.provider, "version": a.version, "url": a.url,
+                           "detail": a.detail} for a in result.attempts], width="stretch",
+                         column_config={"url": st.column_config.LinkColumn("url")})
+        if result.pages_visited:
+            st.markdown("**Pages inspected by the crawler**")
+            st.dataframe(result.pages_visited, width="stretch")
+        st.markdown("**Search log**")
+        for ev in result.events:
+            st.markdown(f"{LEVEL_ICON.get(ev.level, '▫️')} `{ev.stage}` {md_escape(ev.message)}")
+
+
+def render_other_versions(result) -> None:
+    locs: list[FullTextLocation] = result.other_versions
+    if not locs:
+        return
+    status_by_url = {a.url: a for a in result.attempts}
+    rows = []
+    for l in locs:
+        a = status_by_url.get(l.url)
+        rows.append({"version": l.version.label, "type": l.host_type, "found via": l.provider,
+                     "checked": a.status if a else "not needed / not reached", "link": l.url})
+    with st.expander(f"Other versions and locations ({len(rows)})"):
+        st.caption("Only the links marked 'downloaded' were retrieved; the rest are listed for transparency so you can open them yourself.")
+        st.dataframe(rows, width="stretch", column_config={"link": st.column_config.LinkColumn("link")})
+
+
+def render_choices(result) -> None:
+    st.subheader("Which paper do you mean?")
+    for i, p in enumerate(result.alternatives):
+        with st.container(border=True):
+            c1, c2 = st.columns([5, 1])
+            known_oa = "open copy listed" if (p.is_oa or p.locations) else "no open copy listed"
+            c1.markdown(f"**{md_escape(p.title)}**  \n{md_escape(', '.join(p.authors[:4]))} • {p.year or 'n.d.'} • "
+                        f"{md_escape(p.venue or p.work_type or '')} • {known_oa} • sources: {', '.join(p.sources)} • score {p.score:.2f}")
+            if p.doi:
+                c1.markdown(f"[{md_escape(p.doi)}]({p.doi_url})")
+            c2.button("Retrieve this", key=f"pick_{i}", on_click=set_query, args=(paper_query(p),))
+
+
+def render_result(result) -> None:
+    color, label = STATE_STYLE[result.access_state]
+    if result.outcome == Outcome.DOWNLOADED:
+        st.success("Paper retrieved and verified.")
+    elif result.outcome == Outcome.NEEDS_CHOICE:
+        st.warning("More than one publication is plausible - nothing was downloaded.")
+    elif result.outcome == Outcome.NO_FULLTEXT:
+        st.warning("Publication identified, but no legally accessible full text could be verified. Nothing was downloaded.")
+    else:
+        st.error("No matching publication could be identified. Nothing was downloaded.")
+    st.markdown(f"**Access status:** :{color}[{label}]")
+    st.markdown("### Research summary")
+    st.markdown(result.summary)
+    if result.citations:
+        st.markdown("**Sources**")
+        for c in result.citations:
+            st.markdown(f"[{c.label}] [{md_escape(c.title)}]({c.url})" + (f" - {md_escape(c.note)}" if c.note else ""))
+    if result.outcome == Outcome.NEEDS_CHOICE or (result.outcome == Outcome.NOT_FOUND and result.alternatives):
+        render_choices(result)
+    if result.paper:
+        left, right = st.columns(2)
+        with left:
+            render_metadata(result.paper)
+        with right:
+            if result.download:
+                render_download(result)
+            else:
+                st.subheader("Access")
+                if result.official_link:
+                    st.markdown(f"Official page (may need a subscription): [{result.official_link}]({result.official_link})")
+                st.info("No file was saved. The links above are the verified bibliographic record; nothing here is a guessed PDF address.")
+        render_other_versions(result)
+    render_evidence(result)
+    st.caption(f"{result.requests_used} HTTP requests • {result.elapsed_seconds:.0f}s")
+
+
+def render_history() -> None:
+    st.subheader("Previously retrieved papers")
+    q = st.text_input("Search history (title, author, DOI, venue, query)", key="history_search")
+    rows = get_db().history(q, 300)
+    if not rows:
+        st.info("No research runs recorded yet.")
+        return
+    table = [{"date": r["started_at"], "query": r["query"], "title": r["title"] or "", "year": r["year"],
+              "result": r["outcome"], "version": r["version_type"] or "", "file": Path(r["file_path"]).name if r["file_path"] else ""}
+             for r in rows]
+    st.dataframe(table, width="stretch")
+    with_files = [r for r in rows if r["file_path"] and Path(r["file_path"]).is_file()]
+    if with_files:
+        pick = st.selectbox("Open a stored paper", range(len(with_files)),
+                            format_func=lambda i: f"{with_files[i]['title'] or with_files[i]['query']} ({with_files[i]['year'] or 'n.d.'})")
+        r = with_files[pick]
+        st.code(r["file_path"], language=None)
+        if r["doi"]:
+            st.markdown(f"DOI: [{r['doi']}](https://doi.org/{r['doi']})")
+        if r["source_url"]:
+            st.markdown(f"Source: [{md_escape(r['source_url'][:100])}]({r['source_url']})")
+        st.download_button("Save a copy", data=Path(r["file_path"]).read_bytes(), file_name=Path(r["file_path"]).name,
+                           mime="application/pdf", key="hist_dl")
+
+
+def render_help() -> None:
+    s = base_settings()
+    st.markdown("""
+**How it works.** The agent identifies the publication in several scholarly databases, cross-checks the
+metadata, looks for every legal open copy (publisher, repository, preprint), checks each link for real
+access, downloads the PDF, and verifies that its content is the requested paper before keeping it.
+
+**What it will never do:** bypass paywalls, logins or CAPTCHAs, ignore robots.txt, or use shadow libraries.
+
+**Optional API keys** (set as environment variables or in a `.env` file - see README):
+`CONTACT_EMAIL` (Unpaywall + polite pools), `CORE_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `OPENALEX_API_KEY`,
+`BRAVE_API_KEY` or `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_CX` (open-web search for repository copies).
+""")
+    st.json(s.public_summary())
+
+
+# ----------------------------------------------------------------------------- page
+def main() -> None:
+    sidebar()
+    st.title("🎓 Academic Research Agent")
+    st.caption("Finds, verifies and downloads academic papers - only from legal, open sources.")
+    tab_research, tab_history, tab_help = st.tabs(["Research", "History", "Setup & help"])
+    with tab_research:
+        st.text_input("Paper title, DOI, arXiv id, or research question", key="query_text",
+                      placeholder="The Impact of Interest Rates on Peer-to-Peer Lending Default Risk")
+        go = st.button("Research & Download", type="primary")
+        auto = st.session_state.pop("auto_run", False)
+        query = st.session_state.get("query_text", "").strip()
+        if (go or auto) and query:
+            run_research(query)
+        elif go:
+            st.warning("Enter a title, DOI or question first.")
+        if st.session_state.get("result") is not None:
+            render_result(st.session_state["result"])
+    with tab_history:
+        render_history()
+    with tab_help:
+        render_help()
+
+
+main()
