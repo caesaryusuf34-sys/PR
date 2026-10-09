@@ -233,6 +233,9 @@ def classify_query(raw: str) -> QueryInfo:
         title = apa.group(3).strip()
         if re.search(r"\.\s+[A-Z][^.]*,\s*\d+", title):          # drop a trailing ". Journal, 12(3), 45-67"
             title = re.split(r"\.\s+(?=[A-Z][^.]*,\s*\d+)", title, maxsplit=1)[0]
+        q_split = re.split(r"(?<=\?)\s+(?=[A-Z])", title, maxsplit=1)        # "Title? Journal Name" -> keep the question
+        if len(q_split) == 2 and len(q_split[0].split()) >= 3:
+            title = q_split[0]
         title = title.rstrip(" .")
         return QueryInfo(raw=raw, type=QueryType.AUTHOR_YEAR, author=(first[-1] if first else "").lower(), year=int(apa.group(2)),
                          title=title, domain=detect_domain(title), keywords=content_tokens(title))

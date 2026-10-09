@@ -574,7 +574,9 @@ class DoajProvider(SearchProvider):
         return 0.6
 
     def search(self, query, limit=8):
-        q = f'bibjson.title:"{query}"' if len(query.split()) >= 5 and '"' not in query else query
+        query = re.sub(r'[+\-&|!(){}\[\]^"~*?:\\/]', " ", query)          # Lucene special characters break the query (HTTP 400)
+        query = re.sub(r"\s+", " ", query).strip()
+        q = f'bibjson.title:"{query}"' if len(query.split()) >= 5 else query
         data = self.http.get_json(self.BASE + quote(q, safe=""), params={"pageSize": limit})
         res = (data or {}).get("results") or []
         if not res and q != query:

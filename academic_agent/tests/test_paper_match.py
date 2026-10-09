@@ -179,3 +179,8 @@ def test_apa_citation_is_split_into_author_year_and_title():
     assert qi.title.startswith("The Shariah compliance") and qi.title.endswith("the way forward")
     full = classify_query("Smith, J. (2020). Rates and default. Journal of Finance, 12(3), 45-67.")
     assert full.title == "Rates and default" and full.author == "smith"
+
+
+def test_apa_title_ending_in_question_mark_followed_by_journal_name():
+    qi = classify_query("Thahirah, F. A., & Kasri, R. A. (2023). Does fintech threaten Islamic banking performance in Indonesia? Journal of Islamic Accounting and Finance Research")
+    assert qi.author == "thahirah" and qi.year == 2023 and qi.title == "Does fintech threaten Islamic banking performance in Indonesia?"

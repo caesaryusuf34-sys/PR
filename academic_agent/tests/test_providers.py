@@ -160,3 +160,11 @@ def test_oversized_json_is_refused(settings, web):
     web.add("https://api.crossref.org/works", b"{" + b" " * (2 * 1024 * 1024) + b"}", content_type="application/json", headers={"Content-Length": ""})
     with pytest.raises(Exception):
         CrossrefProvider(make_client(s, web), s).search("x")
+
+
+def test_doaj_query_strips_lucene_special_characters(settings, web):
+    web.add("https://doaj.org/api/search/articles/", json.dumps({"results": []}), content_type="application/json")
+    c = make_client(settings, web)
+    DoajProvider(c, settings).search("Does fintech threaten Islamic banking performance in Indonesia? (a study: 2023)")
+    path = web.calls[0].split("?")[0].split("/articles/")[1]
+    assert not any(tok in path for tok in ("%3F", "%28", "%29")) and path.count("%3A") == 1      # only the field separator remains
