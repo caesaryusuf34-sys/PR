@@ -54,6 +54,7 @@ def session_settings() -> Settings:
         max_candidates=int(ss.get("max_candidates", s.max_candidates)),
         time_limit_seconds=float(ss.get("time_limit", s.time_limit_seconds)),
         allow_preprints=bool(ss.get("allow_preprints", s.allow_preprints)),
+        auto_download=bool(ss.get("auto_download", s.auto_download)),
         accept_partial_verification=bool(ss.get("accept_partial", s.accept_partial_verification)))
 
 
@@ -86,6 +87,7 @@ def sidebar() -> None:
         st.slider("Max candidate locations", 4, 40, s.max_candidates, key="max_candidates")
         st.slider("Time limit (seconds)", 30, 600, int(s.time_limit_seconds), step=10, key="time_limit")
         st.subheader("Decisions")
+        st.checkbox("Auto-download: also save the PDF to Downloaded_Papers (off = link only)", s.auto_download, key="auto_download")
         st.checkbox("Allow preprints when nothing better exists", s.allow_preprints, key="allow_preprints")
         st.checkbox("Accept 'partially verified' matches (title differs between versions)", s.accept_partial_verification,
                     key="accept_partial")
@@ -112,10 +114,10 @@ def run_research(query: str) -> None:
 
     result = agent.run(query, progress=on_event, refresh=bool(st.session_state.get("refresh", False)))
     bar.progress(1.0, text="Finished")
-    label = {Outcome.DOWNLOADED: "Paper retrieved and verified", Outcome.NEEDS_CHOICE: "Please choose the intended paper",
+    label = {Outcome.DOWNLOADED: "Paper retrieved and verified", Outcome.LINK_FOUND: "Verified PDF link found", Outcome.NEEDS_CHOICE: "Please choose the intended paper",
              Outcome.NO_FULLTEXT: "Publication identified - no legal full text found",
              Outcome.NOT_FOUND: "No matching publication found"}[result.outcome]
-    status.update(label=label, state="complete" if result.outcome == Outcome.DOWNLOADED else "error"
+    status.update(label=label, state="complete" if result.outcome in (Outcome.DOWNLOADED, Outcome.LINK_FOUND) else "error"
                   if result.outcome == Outcome.NOT_FOUND else "complete", expanded=False)
     st.session_state["result"] = result
 
@@ -146,6 +148,19 @@ def render_metadata(p: Paper) -> None:
         with st.expander("Source-by-source bibliographic comparison"):
             st.dataframe([{"source": s["provider"], "title": s["title"], "year": s["year"], "doi": s["doi"],
                            "first authors": ", ".join(s["authors"][:3])} for s in p.provenance], width="stretch")
+
+
+def render_link(result) -> None:
+    d = result.download
+    st.subheader("PDF link")
+    st.link_button("Open PDF", d.source_url, type="primary")
+    st.code(d.source_url, language=None)
+    st.write(f"**Version:** {d.version.label}  •  **Checked:** {d.access_date or 'n/a'}")
+    if d.landing_url and d.landing_url != d.source_url:
+        st.markdown(f"**Article page:** [{md_escape(d.landing_url[:90])}]({d.landing_url})")
+    st.caption("The link was opened and its PDF content matched this paper. Turn on auto-download in the sidebar to also save a copy.")
+    if d.version in (VersionType.PREPRINT, VersionType.ACCEPTED):
+        st.warning("This is not the final published article. Check the published version before citing page numbers or results.")
 
 
 def render_download(result) -> None:
@@ -218,7 +233,9 @@ def render_choices(result) -> None:
 
 def render_result(result) -> None:
     color, label = STATE_STYLE[result.access_state]
-    if result.outcome == Outcome.DOWNLOADED:
+    if result.outcome == Outcome.LINK_FOUND:
+        st.success("Verified PDF link found (nothing was saved to disk).")
+    elif result.outcome == Outcome.DOWNLOADED:
         st.success("Paper retrieved and verified.")
     elif result.outcome == Outcome.NEEDS_CHOICE:
         st.warning("More than one publication is plausible - nothing was downloaded.")
@@ -240,7 +257,9 @@ def render_result(result) -> None:
         with left:
             render_metadata(result.paper)
         with right:
-            if result.download:
+            if result.download and not result.download.saved:
+                render_link(result)
+            elif result.download:
                 render_download(result)
             else:
                 st.subheader("Access")

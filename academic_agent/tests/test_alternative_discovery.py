@@ -198,3 +198,28 @@ def test_candidate_cap_is_enforced(settings, web):
 def _hit(title, url, snippet):
     from search_providers import WebHit
     return WebHit(title, url, snippet, "web:fake")
+
+
+# --------------------------------------------------------------------------- link-only mode (auto_download off)
+def test_link_only_mode_returns_a_verified_link_and_saves_nothing(settings, web):
+    s = settings.replace(auto_download=False)
+    paper = base_paper(locations=[loc(REPO_PDF, "pdf", VersionType.ACCEPTED, "institutional", "primary")])
+    web.add_pdf(REPO_PDF, good_pdf("Accepted manuscript"))
+    agent = build_agent(s, web, one_provider(paper))
+    r = agent.run(TITLE)
+    assert r.outcome == Outcome.LINK_FOUND and r.access_state == AccessState.ACCEPTED
+    assert r.download.saved is False and r.download.source_url == REPO_PDF and r.download.path == ""
+    assert r.download.verification["verdict"] == "verified"
+    assert not list(s.download_dir.rglob("*.pdf")) and not list(s.download_dir.rglob("*.part"))
+    assert any(c.url == REPO_PDF for c in r.citations) and "Nothing was saved" in r.summary
+    assert agent.db.history(TITLE[:15])[0]["source_url"] == REPO_PDF
+
+
+def test_link_only_mode_still_rejects_the_wrong_document(settings, web):
+    s = settings.replace(auto_download=False)
+    wrong = "https://repo.a.edu/other.pdf"
+    paper = base_paper(locations=[loc(wrong, "pdf", VersionType.PUBLISHED, "institutional", "primary")])
+    web.add_pdf(wrong, paper_pdf("Credit Scoring Models for Marketplace Lending", ["Anna Brown", "Li Wei"], pages=3))
+    web.add("https://doi.org/" + DOI, PAYWALL_HTML)
+    r = build_agent(s, web, one_provider(paper)).run(DOI)
+    assert r.outcome == Outcome.NO_FULLTEXT and r.download is None      # an unverified link is never offered

@@ -32,6 +32,7 @@ class VersionType(str, enum.Enum):
 
 class Outcome(str, enum.Enum):
     DOWNLOADED = "downloaded"
+    LINK_FOUND = "link_found"            # verified PDF link returned, file not saved (auto-download off)
     NEEDS_CHOICE = "needs_choice"
     NO_FULLTEXT = "no_fulltext"
     NOT_FOUND = "not_found"
@@ -212,6 +213,7 @@ class DownloadInfo:
     verification: dict = field(default_factory=dict)
     access_date: str = ""
     already_had: bool = False
+    saved: bool = True                    # False in link-only mode: path is empty, source_url is the PDF link
 
     def to_dict(self) -> dict:
         d = asdict(self)

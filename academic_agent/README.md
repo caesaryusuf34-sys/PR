@@ -7,7 +7,7 @@ Give it a paper title, a DOI, an arXiv id, "Smith 2020 …", or a research quest
 2. identify the publication and **cross-check** its metadata across several databases,
 3. collect every known open copy (publisher, institutional repository, subject repository, preprint, author manuscript),
 4. open each candidate, **check what the server really returns** (PDF signature, login page, paywall, CAPTCHA, robots.txt),
-5. download the PDF, validate it, and **verify from the PDF text that it is the requested paper**,
+5. open the PDF, validate it, and **verify from the PDF text that it is the requested paper** - by default it then returns the verified **link only**; set `AUTO_DOWNLOAD=true` (or tick it in the sidebar) to also save the file to `Downloaded_Papers`,
 6. if nothing works, keep looking for alternative versions (query variants, other databases, web search),
 7. report what it found, which sources it used (with clickable citations), and *exactly* what it checked if it found nothing.
 

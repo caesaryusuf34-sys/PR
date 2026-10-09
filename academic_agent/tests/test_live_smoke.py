@@ -12,7 +12,7 @@ pytestmark = [pytest.mark.live, pytest.mark.skipif(not os.getenv("RUN_LIVE_TESTS
 
 @pytest.fixture
 def live_agent(tmp_path):
-    s = Settings.from_env().replace(download_dir=tmp_path / "Downloaded_Papers", db_path=tmp_path / "live.sqlite3")
+    s = Settings.from_env().replace(download_dir=tmp_path / "Downloaded_Papers", db_path=tmp_path / "live.sqlite3", auto_download=True)
     return ResearchAgent(s)
 
 

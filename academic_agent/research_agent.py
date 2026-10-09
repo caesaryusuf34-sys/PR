@@ -151,7 +151,7 @@ class ResearchAgent:
         result.run_id = run_id
         paper_id = None
         try:
-            if result.paper and result.outcome in (Outcome.DOWNLOADED, Outcome.NO_FULLTEXT):
+            if result.paper and result.outcome in (Outcome.DOWNLOADED, Outcome.LINK_FOUND, Outcome.NO_FULLTEXT):
                 paper_id = self.db.upsert_paper(result.paper)
             self.db.record_attempts(run_id, paper_id, result.attempts)
             self.db.finish_run(run_id, outcome=result.outcome.value, access_state=result.access_state.value,
@@ -199,7 +199,13 @@ class ResearchAgent:
         if info is None and not self.http.budget.exhausted:
             self._discover_alternatives(ctx, heap)
             info = self._attempt_loop(ctx, heap)
-        return self._finish(ctx, Outcome.DOWNLOADED if info else Outcome.NO_FULLTEXT, info)
+        return self._finish(ctx, self._outcome_for(info), info)
+
+    @staticmethod
+    def _outcome_for(info: Optional[DownloadInfo]) -> Outcome:
+        if info is None:
+            return Outcome.NO_FULLTEXT
+        return Outcome.DOWNLOADED if info.saved else Outcome.LINK_FOUND
 
     # ---------------------------------------------------------------------------------------
     # identification
@@ -480,6 +486,18 @@ class ResearchAgent:
             self.downloader.discard(dl)
             self._attempt(ctx, loc.url, "skipped", "document is a preprint and preprints are disabled", loc, "verify")
             return None
+        if not self.settings.auto_download:        # link-only mode: the file was only needed to verify the content
+            self.downloader.discard(dl)
+            paper_id = self.db.upsert_paper(paper)
+            verification = report.to_dict()
+            self.db.record_download(paper_id, file_path="", sha256=dl.sha256, size_bytes=dl.size, version_type=version.value,
+                                    source_url=dl.final_url or loc.url, landing_url=loc.origin_url or paper.doi_url or paper.url,
+                                    provider=loc.provider, verification=verification, query=ctx.qi.raw, status="link_only")
+            self._attempt(ctx, loc.url, "verified_link", "verified: " + "; ".join(report.reasons), loc, "verify")
+            self._emit(ctx, "verify-pdf", f"Verified PDF link ({report.verdict.value}): {'; '.join(report.reasons)}", loc.url, "success")
+            return DownloadInfo(path="", sha256=dl.sha256, size_bytes=dl.size, source_url=dl.final_url or loc.url,
+                                landing_url=loc.origin_url or paper.doi_url or paper.url, provider=loc.provider, version=version,
+                                verification=verification, access_date=now_iso(), saved=False)
         dup = self.db.find_download_by_hash(dl.sha256)
         if dup:
             self.downloader.discard(dl)
@@ -632,7 +650,7 @@ class ResearchAgent:
     def _finish(self, ctx: _Ctx, outcome: Outcome, info: Optional[DownloadInfo], error: str = "") -> ResearchResult:
         paper = ctx.paper
         state = AccessState.UNKNOWN
-        if outcome == Outcome.DOWNLOADED and info:
+        if outcome in (Outcome.DOWNLOADED, Outcome.LINK_FOUND) and info:
             state = {VersionType.PUBLISHED: AccessState.PUBLISHED, VersionType.ACCEPTED: AccessState.ACCEPTED,
                      VersionType.PREPRINT: AccessState.PREPRINT}.get(info.version, AccessState.FULLTEXT_UNKNOWN_VERSION)
         elif outcome == Outcome.NO_FULLTEXT and paper:
@@ -683,7 +701,16 @@ class ResearchAgent:
                      + (f" Not used: {', '.join(f'{k} ({v})' for k, v in r.providers_skipped.items())}." if r.providers_skipped else "")
                      + f" Examined {ctx.examined} candidate location(s), {ctx.pages_fetched} page(s), {ctx.downloads_tried} download(s); "
                        f"{r.requests_used} HTTP requests in {r.elapsed_seconds:.0f}s.")
-        if r.outcome == Outcome.DOWNLOADED and info:
+        if r.outcome == Outcome.LINK_FOUND and info:
+            n = cite("Verified PDF link", info.source_url, f"{info.version.label} via {info.provider}")
+            if info.landing_url and info.landing_url != info.source_url:
+                cite("Page where the PDF was found", info.landing_url, "landing / record page")
+            v = info.verification or {}
+            parts.append(f"**Result.** Found a working, legal PDF link for the **{info.version.label.lower()}** on {urlsplit(info.source_url).hostname} [{n}] "
+                         f"(via {info.provider or 'web'}). It was opened and checked, and its content matches the paper: "
+                         f"{'; '.join(v.get('reasons', [])) or 'ok'}. Nothing was saved to disk (auto-download is off)."
+                         + (" This is **not** the final published article." if info.version in (VersionType.PREPRINT, VersionType.ACCEPTED) else ""))
+        elif r.outcome == Outcome.DOWNLOADED and info:
             n = cite("Downloaded file source", info.source_url, f"{info.version.label} via {info.provider}")
             if info.landing_url and info.landing_url != info.source_url:
                 cite("Page where the file was found", info.landing_url, "landing / record page")

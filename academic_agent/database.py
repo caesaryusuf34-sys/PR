@@ -181,7 +181,7 @@ class Database:
                "p.title, p.authors_json, p.year, p.doi, p.venue, d.file_path, d.version_type, d.source_url, d.sha256, "
                "d.status AS download_status, d.access_date "
                "FROM runs r LEFT JOIN papers p ON p.id=r.paper_id "
-               "LEFT JOIN downloads d ON d.id=(SELECT MAX(id) FROM downloads WHERE paper_id=p.id AND status='downloaded') ")
+               "LEFT JOIN downloads d ON d.id=(SELECT MAX(id) FROM downloads WHERE paper_id=p.id AND status IN ('downloaded','link_only')) ")
         args: list = []
         if search.strip():
             like = f"%{search.strip().lower()}%"

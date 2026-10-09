@@ -138,7 +138,7 @@ def web() -> FakeWeb:
 def settings(tmp_path) -> Settings:
     return Settings.from_env({"CONTACT_EMAIL": "tester@university.edu"}).replace(
         download_dir=tmp_path / "Downloaded_Papers", db_path=tmp_path / "test.sqlite3", host_min_interval=0.0,
-        host_intervals={}, max_retries=2, time_limit_seconds=60.0)
+        host_intervals={}, max_retries=2, time_limit_seconds=60.0, auto_download=True)
 
 
 def make_client(settings: Settings, web: FakeWeb) -> HttpClient:

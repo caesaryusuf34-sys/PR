@@ -127,6 +127,7 @@ class Settings:
     possible_match_threshold: float = 0.75
     accept_partial_verification: bool = True
     allow_preprints: bool = True
+    auto_download: bool = False      # False = give the verified PDF link only; True = also save the file
     auto_pick_topic: bool = False
     blocked_domains: tuple = DEFAULT_BLOCKED_DOMAINS
     no_crawl_domains: tuple = DEFAULT_NO_CRAWL_DOMAINS
@@ -208,6 +209,7 @@ class Settings:
             max_pdf_mb=_env_int(env, "MAX_PDF_MB", d.max_pdf_mb),
             accept_partial_verification=_env_bool(env, "ACCEPT_PARTIAL_VERIFICATION", d.accept_partial_verification),
             allow_preprints=_env_bool(env, "ALLOW_PREPRINTS", d.allow_preprints),
+            auto_download=_env_bool(env, "AUTO_DOWNLOAD", d.auto_download),
             auto_pick_topic=_env_bool(env, "AUTO_PICK_TOPIC", d.auto_pick_topic),
             blocked_domains=tuple(sorted(set(d.blocked_domains) | set(_env_list(env, "EXTRA_BLOCKED_DOMAINS", ())))),
             no_crawl_domains=tuple(sorted(set(d.no_crawl_domains) | set(_env_list(env, "EXTRA_NO_CRAWL_DOMAINS", ())))),
