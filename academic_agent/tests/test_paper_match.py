@@ -184,3 +184,9 @@ def test_apa_citation_is_split_into_author_year_and_title():
 def test_apa_title_ending_in_question_mark_followed_by_journal_name():
     qi = classify_query("Thahirah, F. A., & Kasri, R. A. (2023). Does fintech threaten Islamic banking performance in Indonesia? Journal of Islamic Accounting and Finance Research")
     assert qi.author == "thahirah" and qi.year == 2023 and qi.title == "Does fintech threaten Islamic banking performance in Indonesia?"
+
+
+def test_organisation_as_author_is_not_reduced_to_a_surname():
+    qi = classify_query("Basel Committee on Banking Supervision (2000). Principles for the Management of Credit Risk.")
+    assert qi.type == QueryType.AUTHOR_YEAR and qi.author == "" and qi.year == 2000
+    assert qi.title == "Principles for the Management of Credit Risk"

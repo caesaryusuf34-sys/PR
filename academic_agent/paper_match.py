@@ -234,7 +234,9 @@ def classify_query(raw: str) -> QueryInfo:
     domain = detect_domain(q)
     apa = _APA.match(q)                      # "Surname, A., & Surname, B. (2022). Title. Journal, 1(2), 3-4."
     if apa and len(apa.group(3).split()) >= 3:
-        first = re.split(r"[,&]|\band\b", apa.group(1).strip())[0].strip().split()
+        raw_auth = apa.group(1).strip()
+        is_org = "," not in raw_auth and len(raw_auth.split()) >= 3        # "Basel Committee on Banking Supervision (2000)."
+        first = [] if is_org else re.split(r"[,&]|\band\b", raw_auth)[0].strip().split()
         title = apa.group(3).strip()
         if re.search(r"\.\s+[A-Z][^.]*,\s*\d+", title):          # drop a trailing ". Journal, 12(3), 45-67"
             title = re.split(r"\.\s+(?=[A-Z][^.]*,\s*\d+)", title, maxsplit=1)[0]
